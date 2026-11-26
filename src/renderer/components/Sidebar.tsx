@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Folder,
   FolderInput,
   FolderSync,
@@ -29,6 +30,8 @@ interface SidebarProps {
   entries: EntrySummary[];
   artCount: number;
   triageCount: number;
+  appVersion: string;
+  updateAvailableVersion?: string;
   activeView: ActiveView;
   studioAppearance: StudioAppearance;
   workspacePath: string;
@@ -40,6 +43,7 @@ interface SidebarProps {
   onOpenThemeDrawer: () => void;
   onOpenImportModal: () => void;
   onOpenIntakeModal: () => void;
+  onOpenUpdateModal: () => void;
   onOpenQuickSwitcher: () => void;
   onToggleAppearance: () => void;
   onChangeWorkspaceFolder: () => void;
@@ -51,6 +55,8 @@ export function Sidebar({
   entries,
   artCount,
   triageCount,
+  appVersion,
+  updateAvailableVersion,
   activeView,
   studioAppearance,
   workspacePath,
@@ -62,6 +68,7 @@ export function Sidebar({
   onOpenThemeDrawer,
   onOpenImportModal,
   onOpenIntakeModal,
+  onOpenUpdateModal,
   onOpenQuickSwitcher,
   onToggleAppearance,
   onChangeWorkspaceFolder,
@@ -347,6 +354,22 @@ export function Sidebar({
         >
           <FolderInput className="w-3.5 h-3.5" />
           Import Obsidian Vault
+        </button>
+        <button
+          onClick={onOpenUpdateModal}
+          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+        >
+          <span className="flex items-center gap-2">
+            <Download className="w-3.5 h-3.5" />
+            Check for Updates
+          </span>
+          {updateAvailableVersion ? (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-semibold bg-emerald-600 text-white">
+              v{updateAvailableVersion}
+            </span>
+          ) : (
+            <span className="text-[10px] opacity-60">v{appVersion}</span>
+          )}
         </button>
         <div className="flex items-center justify-between pt-1 px-1">
           <button

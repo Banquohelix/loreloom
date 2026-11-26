@@ -60,6 +60,14 @@ const bridge: DesktopBridge = {
     ipcRenderer.on('intake:synced', listener);
     return () => ipcRenderer.removeListener('intake:synced', listener);
   },
+
+  getAppVersion: () => ipcRenderer.invoke('update:get-version'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadAndInstallUpdate: (installerApiUrl, filename) =>
+    ipcRenderer.invoke('update:download-install', installerApiUrl, filename),
+  hasUpdateToken: () => ipcRenderer.invoke('update:has-token'),
+  setUpdateToken: (token) => ipcRenderer.invoke('update:set-token', token),
+  openExternalUrl: (url) => ipcRenderer.invoke('shell:open-external', url),
 };
 
 contextBridge.exposeInMainWorld('loreloom', bridge);

@@ -229,6 +229,17 @@ export interface IntakeSyncReport {
   syncedAt: string;
 }
 
+export interface UpdateCheckResult {
+  status: 'up-to-date' | 'update-available' | 'auth-required' | 'error';
+  currentVersion: string;
+  latestVersion?: string;
+  releaseUrl: string;
+  installerApiUrl?: string;
+  installerFilename?: string;
+  releaseNotes?: string;
+  message?: string;
+}
+
 export interface DesktopBridge {
   // Workspace lifecycle
   getSavedWorkspacePath: () => Promise<string | null>;
@@ -279,4 +290,12 @@ export interface DesktopBridge {
   setWorldIntakeFolders: (worldSlug: string, folders: string[]) => Promise<string[]>;
   runWorldIntakeSync: (worldSlug: string) => Promise<IntakeSyncReport>;
   onIntakeSynced: (cb: (report: IntakeSyncReport) => void) => () => void;
+
+  // In-App Update Checker
+  getAppVersion: () => Promise<string>;
+  checkForUpdates: () => Promise<UpdateCheckResult>;
+  downloadAndInstallUpdate: (installerApiUrl: string, filename: string) => Promise<void>;
+  hasUpdateToken: () => Promise<boolean>;
+  setUpdateToken: (token: string | null) => Promise<void>;
+  openExternalUrl: (url: string) => Promise<void>;
 }

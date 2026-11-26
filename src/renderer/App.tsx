@@ -9,6 +9,7 @@ import {
   type Entry,
   type EntrySummary,
   type StudioAppearance,
+  type UpdateCheckResult,
   type WorldConfig,
   type WorldTheme,
   type WorkspaceState,
@@ -26,6 +27,7 @@ import { WorldThemeDrawer } from './components/WorldThemeDrawer';
 import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
 import { IntakeSyncModal } from './components/IntakeSyncModal';
+import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
 
@@ -45,9 +47,12 @@ export default function App() {
   const [entityTypeModalOpen, setEntityTypeModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('0.3.0');
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
   const triageCount = useMemo(
     () =>
@@ -104,14 +109,24 @@ export default function App() {
     [bridge]
   );
 
-  // Boot: restore saved workspace path
+  // Boot: restore saved workspace path + check version/updates
   useEffect(() => {
     (async () => {
       try {
-        const saved = await bridge.getSavedWorkspacePath();
+        const [saved, ver] = await Promise.all([
+          bridge.getSavedWorkspacePath(),
+          bridge.getAppVersion(),
+        ]);
+        setAppVersion(ver);
         if (saved) {
           await loadWorkspace(saved);
         }
+        bridge
+          .checkForUpdates()
+          .then((res) => {
+            if (res.status === 'update-available') setUpdateResult(res);
+          })
+          .catch(() => {});
       } finally {
         setBooting(false);
       }
@@ -309,6 +324,10 @@ export default function App() {
         entries={entries}
         artCount={artAssets.length}
         triageCount={triageCount}
+        appVersion={appVersion}
+        updateAvailableVersion={
+          updateResult?.status === 'update-available' ? updateResult.latestVersion : undefined
+        }
         activeView={activeView}
         studioAppearance={appearance}
         workspacePath={workspace.rootPath}
@@ -320,6 +339,7 @@ export default function App() {
         onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
         onOpenImportModal={() => setImportModalOpen(true)}
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
+        onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
         onToggleAppearance={handleToggleAppearance}
         onChangeWorkspaceFolder={handleChangeWorkspaceFolder}
@@ -454,6 +474,15 @@ export default function App() {
           onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
           onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           onClose={() => setIntakeModalOpen(false)}
+        />
+      )}
+
+      {updateModalOpen && (
+        <UpdateModal
+          currentVersion={appVersion}
+          initialResult={updateResult}
+          onResultUpdated={setUpdateResult}
+          onClose={() => setUpdateModalOpen(false)}
         />
       )}
 

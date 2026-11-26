@@ -312,6 +312,20 @@ function createBrowserPreviewBridge(): DesktopBridge {
       syncedAt: new Date().toISOString(),
     }),
     onIntakeSynced: () => () => {},
+    getAppVersion: async () => '0.3.0',
+    checkForUpdates: async () => ({
+      status: 'up-to-date',
+      currentVersion: '0.3.0',
+      latestVersion: '0.3.0',
+      releaseUrl: 'https://github.com/Banquohelix/loreloom/releases',
+      message: 'Preview mode is up to date.',
+    }),
+    downloadAndInstallUpdate: async () => {},
+    hasUpdateToken: async () => false,
+    setUpdateToken: async () => {},
+    openExternalUrl: async (url) => {
+      window.open(url, '_blank');
+    },
   };
 }
 

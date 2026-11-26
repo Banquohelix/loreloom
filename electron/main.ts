@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } from 'electron';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -7,6 +8,7 @@ import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
+import { checkLatestGitHubRelease } from '../src/core/update-checker';
 import type {
   ArtCategory,
   ArtQuery,
@@ -40,6 +42,7 @@ const intakeEngine = new IntakeEngine();
 interface AppSettings {
   workspacePath?: string;
   worldIntakeFolders?: Record<string, string[]>;
+  githubUpdateToken?: string;
 }
 
 function getSettingsPath(): string {
@@ -383,6 +386,69 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('intake:run-sync', async (_e, worldSlug: string) => {
     return runWorldIntakeSyncAndNotify(worldSlug);
+  });
+
+  ipcMain.handle('update:get-version', async () => {
+    return app.getVersion();
+  });
+
+  ipcMain.handle('update:has-token', async () => {
+    const settings = await readAppSettings();
+    return Boolean(settings.githubUpdateToken && settings.githubUpdateToken.trim());
+  });
+
+  ipcMain.handle('update:set-token', async (_e, token: string | null) => {
+    const settings = await readAppSettings();
+    const updated: AppSettings = { ...settings };
+    if (token && token.trim()) {
+      updated.githubUpdateToken = token.trim();
+    } else {
+      delete updated.githubUpdateToken;
+    }
+    await writeAppSettings(updated);
+  });
+
+  ipcMain.handle('update:check', async () => {
+    const settings = await readAppSettings();
+    return checkLatestGitHubRelease({
+      currentVersion: app.getVersion(),
+      token: settings.githubUpdateToken ?? null,
+    });
+  });
+
+  ipcMain.handle('update:download-install', async (_e, installerApiUrl: string, filename: string) => {
+    const settings = await readAppSettings();
+    const headers: Record<string, string> = {
+      Accept: 'application/octet-stream',
+      'User-Agent': `Loreloom/${app.getVersion()}`,
+    };
+    if (settings.githubUpdateToken?.trim()) {
+      headers.Authorization = `Bearer ${settings.githubUpdateToken.trim()}`;
+    }
+
+    const res = await fetch(installerApiUrl, { headers, redirect: 'follow' });
+    if (!res.ok) {
+      throw new Error(`Could not download installer (HTTP ${res.status}).`);
+    }
+
+    const arrayBuf = await res.arrayBuffer();
+    const safeName = path.basename(filename || 'Loreloom-Setup.exe');
+    const outDir = path.join(os.tmpdir(), 'loreloom-update');
+    await fs.mkdir(outDir, { recursive: true });
+    const installerPath = path.join(outDir, safeName);
+    await fs.writeFile(installerPath, Buffer.from(arrayBuf));
+
+    const openErr = await shell.openPath(installerPath);
+    if (openErr) {
+      throw new Error(`Downloaded installer, but could not launch it: ${openErr}`);
+    }
+    setTimeout(() => app.quit(), 400);
+  });
+
+  ipcMain.handle('shell:open-external', async (_e, url: string) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      await shell.openExternal(url);
+    }
   });
 }
 
