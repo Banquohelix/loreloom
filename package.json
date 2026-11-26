@@ -1,6 +1,6 @@
 {
   "name": "loreloom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Notion-style worldbuilding notes and concept art studio synced via OneDrive/Google Drive",
   "private": true,
   "main": "dist-electron/electron/main.js",

@@ -28,3 +28,9 @@ The machine-local, rebuildable SQLite + FTS5 cache stored outside the synced fol
 
 ## VaultImport
 A non-destructive copy of an external Obsidian vault (Markdown notes, folder hierarchy, YAML frontmatter, `[[wikilinks]]`, `#tags`, and `![[embedded images]]`) into a Loreloom World, producing an inspectable ImportReport.
+
+## IntakeFolder
+An external local folder (e.g., `Brimstone` or `Neon Ash`) linked to a World where new lore notes (`.md`, `.txt`) and concept art images from AI tools are dropped for automatic import and sorting.
+
+## IntakeSync
+A non-destructive sync job (live-watched, on launch, or manual) that scans a World's IntakeFolders, skips unchanged files via fingerprint tracking, auto-classifies new notes and art into World EntityTypes and ArtCategories, and flags ambiguous files with `#needs-triage` for one-click re-sorting.

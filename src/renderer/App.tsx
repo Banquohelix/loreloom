@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sparkles } from 'lucide-react';
-import type {
-  ArtAsset,
-  BacklinkRef,
-  CreateWorldInput,
-  EntityTypeDef,
-  Entry,
-  EntrySummary,
-  StudioAppearance,
-  WorldConfig,
-  WorldTheme,
-  WorkspaceState,
+import {
+  NEEDS_TRIAGE_TAG,
+  type ArtAsset,
+  type BacklinkRef,
+  type CreateWorldInput,
+  type EntityTypeDef,
+  type Entry,
+  type EntrySummary,
+  type StudioAppearance,
+  type WorldConfig,
+  type WorldTheme,
+  type WorkspaceState,
 } from '@shared/types';
 import { resolveWorldTokens } from '@core/theme-engine';
 import { getBridge } from './lib/bridge';
@@ -24,6 +25,7 @@ import { ArtGalleryView } from './components/ArtGalleryView';
 import { WorldThemeDrawer } from './components/WorldThemeDrawer';
 import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
+import { IntakeSyncModal } from './components/IntakeSyncModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
 
@@ -42,8 +44,17 @@ export default function App() {
   const [themeDrawerOpen, setThemeDrawerOpen] = useState(false);
   const [entityTypeModalOpen, setEntityTypeModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const triageCount = useMemo(
+    () =>
+      entries.filter((e) => e.tags.includes(NEEDS_TRIAGE_TAG)).length +
+      artAssets.filter((a) => a.tags.includes(NEEDS_TRIAGE_TAG)).length,
+    [entries, artAssets]
+  );
 
   const appearance: StudioAppearance = workspace?.config.studioAppearance ?? 'light';
 
@@ -164,6 +175,23 @@ export default function App() {
     });
   }, [bridge, workspace, activeWorldSlug, refreshWorldData]);
 
+  // Live notification & refresh when a World's Intake Folder syncs new AI notes/art
+  useEffect(() => {
+    return bridge.onIntakeSynced(async (report) => {
+      if (activeWorldSlug && report.worldSlug === activeWorldSlug) {
+        await refreshWorldData(activeWorldSlug);
+      }
+      const parts: string[] = [];
+      if (report.importedEntries > 0) parts.push(`${report.importedEntries} new lore`);
+      if (report.updatedEntries > 0) parts.push(`${report.updatedEntries} updated`);
+      if (report.importedArt > 0) parts.push(`${report.importedArt} art`);
+      if (parts.length > 0) {
+        setToastMessage(`Intake Sync: imported ${parts.join(', ')}`);
+        window.setTimeout(() => setToastMessage(null), 5000);
+      }
+    });
+  }, [bridge, activeWorldSlug, refreshWorldData]);
+
   const handleSelectWorld = async (slug: string) => {
     setActiveWorldSlug(slug);
     setActiveView({ kind: 'overview' });
@@ -280,6 +308,7 @@ export default function App() {
         activeWorld={activeWorld}
         entries={entries}
         artCount={artAssets.length}
+        triageCount={triageCount}
         activeView={activeView}
         studioAppearance={appearance}
         workspacePath={workspace.rootPath}
@@ -290,6 +319,7 @@ export default function App() {
         onOpenEntityTypeModal={() => setEntityTypeModalOpen(true)}
         onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
         onOpenImportModal={() => setImportModalOpen(true)}
+        onOpenIntakeModal={() => setIntakeModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
         onToggleAppearance={handleToggleAppearance}
         onChangeWorkspaceFolder={handleChangeWorkspaceFolder}
@@ -416,11 +446,28 @@ export default function App() {
         />
       )}
 
+      {intakeModalOpen && activeWorld && (
+        <IntakeSyncModal
+          world={activeWorld}
+          entries={entries}
+          artAssets={artAssets}
+          onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
+          onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+          onClose={() => setIntakeModalOpen(false)}
+        />
+      )}
+
       {createWorldModalOpen && (
         <CreateWorldModal
           onCreate={handleCreateWorld}
           onClose={() => setCreateWorldModalOpen(false)}
         />
+      )}
+
+      {toastMessage && (
+        <div className="fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-medium shadow-xl">
+          {toastMessage}
+        </div>
       )}
     </div>
   );

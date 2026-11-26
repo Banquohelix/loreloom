@@ -1,3 +1,5 @@
+export const NEEDS_TRIAGE_TAG = 'needs-triage';
+
 export type StudioAppearance = 'light' | 'dark';
 
 export type WorldMedium =
@@ -204,6 +206,29 @@ export interface WorkspaceExternalChangeEvent {
   relativePath: string;
 }
 
+export interface IntakeImportedItem {
+  kind: 'entry' | 'art';
+  id: string;
+  title: string;
+  sourceRelPath: string;
+  assignedCategory: string;
+  needsTriage: boolean;
+  action: 'created' | 'updated';
+}
+
+export interface IntakeSyncReport {
+  worldSlug: string;
+  foldersScanned: number;
+  importedEntries: number;
+  updatedEntries: number;
+  importedArt: number;
+  needsTriageCount: number;
+  skippedUnchanged: number;
+  items: IntakeImportedItem[];
+  warnings: string[];
+  syncedAt: string;
+}
+
 export interface DesktopBridge {
   // Workspace lifecycle
   getSavedWorkspacePath: () => Promise<string | null>;
@@ -248,4 +273,10 @@ export interface DesktopBridge {
 
   // External sync watcher subscription
   onWorkspaceChanged: (cb: (event: WorkspaceExternalChangeEvent) => void) => () => void;
+
+  // Per-World Intake Drop-Folder Sync
+  getWorldIntakeFolders: (worldSlug: string) => Promise<string[]>;
+  setWorldIntakeFolders: (worldSlug: string, folders: string[]) => Promise<string[]>;
+  runWorldIntakeSync: (worldSlug: string) => Promise<IntakeSyncReport>;
+  onIntakeSynced: (cb: (report: IntakeSyncReport) => void) => () => void;
 }

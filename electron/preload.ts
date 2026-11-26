@@ -1,5 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DesktopBridge, WorkspaceExternalChangeEvent } from '../src/shared/types';
+import type {
+  DesktopBridge,
+  IntakeSyncReport,
+  WorkspaceExternalChangeEvent,
+} from '../src/shared/types';
 
 const bridge: DesktopBridge = {
   getSavedWorkspacePath: () => ipcRenderer.invoke('workspace:get-saved-path'),
@@ -45,6 +49,16 @@ const bridge: DesktopBridge = {
       cb(payload);
     ipcRenderer.on('workspace:external-change', listener);
     return () => ipcRenderer.removeListener('workspace:external-change', listener);
+  },
+
+  getWorldIntakeFolders: (worldSlug) => ipcRenderer.invoke('intake:get-folders', worldSlug),
+  setWorldIntakeFolders: (worldSlug, folders) =>
+    ipcRenderer.invoke('intake:set-folders', worldSlug, folders),
+  runWorldIntakeSync: (worldSlug) => ipcRenderer.invoke('intake:run-sync', worldSlug),
+  onIntakeSynced: (cb) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: IntakeSyncReport) => cb(payload);
+    ipcRenderer.on('intake:synced', listener);
+    return () => ipcRenderer.removeListener('intake:synced', listener);
   },
 };
 

@@ -6,12 +6,14 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
+import { IntakeEngine } from '../src/core/intake-engine';
 import type {
   ArtCategory,
   ArtQuery,
   CollectionQuery,
   CreateEntryInput,
   CreateWorldInput,
+  IntakeSyncReport,
   UpdateEntryInput,
   WorldConfig,
   WorldMedium,
@@ -31,10 +33,13 @@ let mainWindow: BrowserWindow | null = null;
 let store: WorkspaceStore | null = null;
 let indexEngine: IndexEngine | null = null;
 let watcher: FSWatcher | null = null;
+const intakeWatchers = new Map<string, FSWatcher>();
 const importer = new ObsidianImporter();
+const intakeEngine = new IntakeEngine();
 
 interface AppSettings {
   workspacePath?: string;
+  worldIntakeFolders?: Record<string, string[]>;
 }
 
 function getSettingsPath(): string {
@@ -115,6 +120,63 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
   watcher.on('unlink', handleChange);
 }
 
+async function runWorldIntakeSyncAndNotify(worldSlug: string): Promise<IntakeSyncReport> {
+  const s = requireStore();
+  const idx = requireIndex();
+  const settings = await readAppSettings();
+  const folders = settings.worldIntakeFolders?.[worldSlug] ?? [];
+  const worlds = await s.listWorlds();
+  const world = worlds.find((w) => w.slug === worldSlug);
+  if (!world) {
+    throw new Error(`World not found: ${worldSlug}`);
+  }
+
+  const report = await intakeEngine.syncWorldIntake(s, world, folders);
+  if (report.importedEntries > 0 || report.updatedEntries > 0) {
+    await idx.syncWorld(s, world);
+  }
+  if (
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    (report.importedEntries > 0 || report.updatedEntries > 0 || report.importedArt > 0)
+  ) {
+    mainWindow.webContents.send('intake:synced', report);
+  }
+  return report;
+}
+
+async function refreshIntakeWatchers(): Promise<void> {
+  for (const w of intakeWatchers.values()) {
+    await w.close();
+  }
+  intakeWatchers.clear();
+
+  if (!store) return;
+  const settings = await readAppSettings();
+  const map = settings.worldIntakeFolders ?? {};
+
+  for (const [worldSlug, folders] of Object.entries(map)) {
+    if (!folders || folders.length === 0) continue;
+    let debounceTimer: NodeJS.Timeout | null = null;
+    const w = chokidar.watch(folders, {
+      ignoreInitial: true,
+      ignored: /(^|[/\\])(\.|node_modules|_imported)|\.tmp$/,
+      awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 150 },
+    });
+
+    const trigger = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        runWorldIntakeSyncAndNotify(worldSlug).catch(() => {});
+      }, 650);
+    };
+
+    w.on('add', trigger);
+    w.on('change', trigger);
+    intakeWatchers.set(worldSlug, w);
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('workspace:get-saved-path', async () => {
     const settings = await readAppSettings();
@@ -141,7 +203,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle('workspace:open', async (_e, rootPath: string) => {
     store = new WorkspaceStore(rootPath);
     const state = await store.ensureInitialized();
-    await writeAppSettings({ workspacePath: rootPath });
+    const existingSettings = await readAppSettings();
+    await writeAppSettings({ ...existingSettings, workspacePath: rootPath });
 
     if (indexEngine) {
       indexEngine.close();
@@ -149,6 +212,16 @@ function registerIpcHandlers(): void {
     indexEngine = new IndexEngine(getIndexDbPath());
     await indexEngine.rebuildWorkspace(store);
     await startWorkspaceWatcher(rootPath);
+    await refreshIntakeWatchers();
+
+    // Catch-up intake sync on launch for any Worlds with linked drop folders
+    const intakeMap = existingSettings.worldIntakeFolders ?? {};
+    for (const world of state.worlds) {
+      if ((intakeMap[world.slug]?.length ?? 0) > 0) {
+        runWorldIntakeSyncAndNotify(world.slug).catch(() => {});
+      }
+    }
+
     return state;
   });
 
@@ -294,6 +367,23 @@ function registerIpcHandlers(): void {
       return report;
     }
   );
+
+  ipcMain.handle('intake:get-folders', async (_e, worldSlug: string) => {
+    const settings = await readAppSettings();
+    return settings.worldIntakeFolders?.[worldSlug] ?? [];
+  });
+
+  ipcMain.handle('intake:set-folders', async (_e, worldSlug: string, folders: string[]) => {
+    const settings = await readAppSettings();
+    const nextMap = { ...(settings.worldIntakeFolders ?? {}), [worldSlug]: folders };
+    await writeAppSettings({ ...settings, worldIntakeFolders: nextMap });
+    await refreshIntakeWatchers();
+    return folders;
+  });
+
+  ipcMain.handle('intake:run-sync', async (_e, worldSlug: string) => {
+    return runWorldIntakeSyncAndNotify(worldSlug);
+  });
 }
 
 function createWindow(): void {
@@ -352,6 +442,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', async () => {
   if (watcher) await watcher.close();
+  for (const w of intakeWatchers.values()) await w.close();
   if (indexEngine) indexEngine.close();
   if (process.platform !== 'darwin') app.quit();
 });

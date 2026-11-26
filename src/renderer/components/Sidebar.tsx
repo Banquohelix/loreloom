@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Folder,
   FolderInput,
+  FolderSync,
   Image as ImageIcon,
   LayoutGrid,
   Moon,
@@ -27,6 +28,7 @@ interface SidebarProps {
   activeWorld: WorldConfig | null;
   entries: EntrySummary[];
   artCount: number;
+  triageCount: number;
   activeView: ActiveView;
   studioAppearance: StudioAppearance;
   workspacePath: string;
@@ -37,6 +39,7 @@ interface SidebarProps {
   onOpenEntityTypeModal: () => void;
   onOpenThemeDrawer: () => void;
   onOpenImportModal: () => void;
+  onOpenIntakeModal: () => void;
   onOpenQuickSwitcher: () => void;
   onToggleAppearance: () => void;
   onChangeWorkspaceFolder: () => void;
@@ -47,6 +50,7 @@ export function Sidebar({
   activeWorld,
   entries,
   artCount,
+  triageCount,
   activeView,
   studioAppearance,
   workspacePath,
@@ -57,6 +61,7 @@ export function Sidebar({
   onOpenEntityTypeModal,
   onOpenThemeDrawer,
   onOpenImportModal,
+  onOpenIntakeModal,
   onOpenQuickSwitcher,
   onToggleAppearance,
   onChangeWorkspaceFolder,
@@ -312,13 +317,29 @@ export function Sidebar({
       {/* Footer Actions */}
       <div className="p-2.5 border-t border-[var(--studio-border)] space-y-1">
         {activeWorld && (
-          <button
-            onClick={onOpenThemeDrawer}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
-          >
-            <Palette className="w-3.5 h-3.5" />
-            World Theme & Style
-          </button>
+          <>
+            <button
+              onClick={onOpenIntakeModal}
+              className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <span className="flex items-center gap-2">
+                <FolderSync className="w-3.5 h-3.5" />
+                Intake Folder Sync
+              </span>
+              {triageCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-semibold bg-amber-500 text-white">
+                  {triageCount}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={onOpenThemeDrawer}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <Palette className="w-3.5 h-3.5" />
+              World Theme & Style
+            </button>
+          </>
         )}
         <button
           onClick={onOpenImportModal}

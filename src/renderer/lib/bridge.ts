@@ -297,6 +297,21 @@ function createBrowserPreviewBridge(): DesktopBridge {
       warnings: ['Obsidian import requires the Electron desktop runtime.'],
     }),
     onWorkspaceChanged: () => () => {},
+    getWorldIntakeFolders: async () => [],
+    setWorldIntakeFolders: async (_slug, folders) => folders,
+    runWorldIntakeSync: async (worldSlug) => ({
+      worldSlug,
+      foldersScanned: 0,
+      importedEntries: 0,
+      updatedEntries: 0,
+      importedArt: 0,
+      needsTriageCount: 0,
+      skippedUnchanged: 0,
+      items: [],
+      warnings: [],
+      syncedAt: new Date().toISOString(),
+    }),
+    onIntakeSynced: () => () => {},
   };
 }
 
