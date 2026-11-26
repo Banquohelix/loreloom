@@ -41,9 +41,10 @@ jobs:
         run: |
           if ($env:CSC_LINK) {
             pnpm run build
-            pnpm exec electron-builder --win -c.win.signAndEditExecutable=true
+            pnpm exec electron-builder --win --publish never --config.win.signAndEditExecutable=true
           } else {
-            pnpm run package
+            pnpm run build
+            pnpm exec electron-builder --win --publish never
           }
 
       - name: Upload installer artifacts
