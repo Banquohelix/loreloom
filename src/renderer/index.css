@@ -1,0 +1,180 @@
+@import "tailwindcss";
+
+:root {
+  --studio-bg: #f9f9fa;
+  --studio-sidebar: #f4f4f6;
+  --studio-surface: #ffffff;
+  --studio-border: #e4e4e7;
+  --studio-text: #18181b;
+  --studio-muted: #71717a;
+
+  --world-accent: #b45309;
+  --world-accent-soft: rgba(180, 83, 9, 0.12);
+  --world-canvas-bg: #fbf8f1;
+  --world-canvas-muted: #f3ede0;
+  --world-canvas-border: #e7dfd0;
+  --world-heading-font: 'Cormorant Garamond', Georgia, serif;
+  --world-body-font: 'Newsreader', 'Inter', Georgia, serif;
+}
+
+.dark {
+  --studio-bg: #121215;
+  --studio-sidebar: #16161a;
+  --studio-surface: #1c1c21;
+  --studio-border: #27272d;
+  --studio-text: #f4f4f5;
+  --studio-muted: #a1a1aa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--studio-bg);
+  color: var(--studio-text);
+}
+
+.world-canvas {
+  background-color: var(--world-canvas-bg);
+  border-color: var(--world-canvas-border);
+}
+
+.world-heading {
+  font-family: var(--world-heading-font);
+}
+
+.world-prose {
+  font-family: var(--world-body-font);
+  line-height: 1.75;
+  font-size: 1.035rem;
+}
+
+/* TipTap Notion-like editor prose */
+.world-prose .ProseMirror {
+  outline: none;
+  min-height: 360px;
+}
+
+.world-prose .ProseMirror h1,
+.world-prose .ProseMirror h2,
+.world-prose .ProseMirror h3 {
+  font-family: var(--world-heading-font);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 1.5em;
+  margin-bottom: 0.45em;
+  line-height: 1.25;
+}
+
+.world-prose .ProseMirror h1 {
+  font-size: 2rem;
+}
+.world-prose .ProseMirror h2 {
+  font-size: 1.55rem;
+}
+.world-prose .ProseMirror h3 {
+  font-size: 1.25rem;
+}
+
+.world-prose .ProseMirror p {
+  margin: 0.65em 0;
+}
+
+.world-prose.editorial-dropcap .ProseMirror > p:first-of-type::first-letter {
+  font-family: var(--world-heading-font);
+  float: left;
+  font-size: 3.35rem;
+  line-height: 0.84;
+  padding-right: 0.45rem;
+  padding-top: 0.25rem;
+  font-weight: 600;
+  color: var(--world-accent);
+}
+
+.world-prose .ProseMirror blockquote {
+  border-left: 3px solid var(--world-accent);
+  background-color: var(--world-canvas-muted);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  border-radius: 0 0.5rem 0.5rem 0;
+  font-style: italic;
+}
+
+.world-prose .ProseMirror ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin: 0.6rem 0;
+}
+
+.world-prose .ProseMirror ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin: 0.6rem 0;
+}
+
+.world-prose .ProseMirror ul[data-type='taskList'] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.world-prose .ProseMirror ul[data-type='taskList'] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.35rem 0;
+}
+
+.world-prose .ProseMirror ul[data-type='taskList'] input[type='checkbox'] {
+  margin-top: 0.35rem;
+  accent-color: var(--world-accent);
+}
+
+.world-prose .ProseMirror pre {
+  background-color: var(--world-canvas-muted);
+  border: 1px solid var(--world-canvas-border);
+  border-radius: 0.5rem;
+  padding: 0.85rem 1rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875rem;
+  overflow-x: auto;
+}
+
+.world-prose .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--world-canvas-border);
+  margin: 1.75rem 0;
+}
+
+.world-prose .ProseMirror img {
+  border-radius: 0.75rem;
+  max-width: 100%;
+  margin: 1.25rem 0;
+  border: 1px solid var(--world-canvas-border);
+}
+
+.world-prose .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--studio-muted);
+  pointer-events: none;
+  height: 0;
+  opacity: 0.65;
+}
+
+/* Subtle custom scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.28);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.45);
+}

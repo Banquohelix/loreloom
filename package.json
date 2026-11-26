@@ -1,0 +1,53 @@
+{
+  "name": "loreloom",
+  "version": "0.1.0",
+  "description": "Notion-style worldbuilding notes and concept art studio synced via OneDrive/Google Drive",
+  "private": true,
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.node.json && electron .\"",
+    "build:electron": "tsc -p tsconfig.node.json",
+    "build": "tsc --noEmit && vite build && tsc -p tsconfig.node.json",
+    "package": "pnpm run build && electron-builder --win",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tiptap/extension-blockquote": "^2.11.5",
+    "@tiptap/extension-code-block": "^2.11.5",
+    "@tiptap/extension-horizontal-rule": "^2.11.5",
+    "@tiptap/extension-image": "^2.11.5",
+    "@tiptap/extension-placeholder": "^2.11.5",
+    "@tiptap/extension-task-item": "^2.11.5",
+    "@tiptap/extension-task-list": "^2.11.5",
+    "@tiptap/pm": "^2.11.5",
+    "@tiptap/react": "^2.11.5",
+    "@tiptap/starter-kit": "^2.11.5",
+    "chokidar": "^4.0.3",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "lucide-react": "^0.475.0",
+    "marked": "^15.0.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.9",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.5",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@types/turndown": "^5.0.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "tailwindcss": "^4.0.9",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.7",
+    "wait-on": "^8.0.2"
+  }
+}

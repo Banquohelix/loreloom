@@ -1,0 +1,251 @@
+export type StudioAppearance = 'light' | 'dark';
+
+export type WorldMedium =
+  | 'video-game'
+  | 'ttrpg'
+  | 'novel'
+  | 'short-story'
+  | 'film'
+  | 'other';
+
+export type WorldThemePresetId =
+  | 'minimal-studio'
+  | 'parchment-lorebook'
+  | 'scifi-slate'
+  | 'dark-fantasy-ink'
+  | 'botanical-codex';
+
+export type HeadingFontStyle = 'sans' | 'serif' | 'mono';
+
+export interface WorldTheme {
+  preset: WorldThemePresetId;
+  accentColor: string;
+  headingFont: HeadingFontStyle;
+  surfaceTint: string;
+  editorialDropCap: boolean;
+}
+
+export type PropertyFieldType = 'text' | 'select' | 'multi-select' | 'date' | 'number';
+
+export interface PropertyFieldDef {
+  key: string;
+  label: string;
+  fieldType: PropertyFieldType;
+  options?: string[];
+}
+
+export interface EntityTypeDef {
+  id: string;
+  name: string;
+  pluralName: string;
+  icon: string;
+  color: string;
+  defaultView: 'gallery' | 'table';
+  fields: PropertyFieldDef[];
+  builtIn?: boolean;
+}
+
+export interface WorldConfig {
+  id: string;
+  slug: string;
+  name: string;
+  subtitle: string;
+  medium: WorldMedium;
+  coverAssetId?: string;
+  theme: WorldTheme;
+  entityTypes: EntityTypeDef[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ArtCategory =
+  | 'character'
+  | 'environment'
+  | 'prop'
+  | 'mood'
+  | 'map'
+  | 'other';
+
+export interface ArtAsset {
+  id: string;
+  worldSlug: string;
+  filename: string;
+  relativePath: string;
+  title: string;
+  category: ArtCategory;
+  tags: string[];
+  caption: string;
+  createdAt: string;
+}
+
+export type EntryPropertyValue = string | string[] | number | boolean;
+
+export interface EntrySummary {
+  id: string;
+  worldSlug: string;
+  title: string;
+  slug: string;
+  type: string;
+  folder: string;
+  relativePath: string;
+  tags: string[];
+  properties: Record<string, EntryPropertyValue>;
+  coverAssetId?: string;
+  portraitAssetId?: string;
+  updatedAt: string;
+  excerpt: string;
+}
+
+export interface Entry extends EntrySummary {
+  body: string;
+  createdAt: string;
+}
+
+export interface BacklinkRef {
+  sourceId: string;
+  sourceTitle: string;
+  sourceType: string;
+  context: string;
+}
+
+export interface SearchHit {
+  entryId: string;
+  worldSlug: string;
+  worldName: string;
+  title: string;
+  type: string;
+  snippet: string;
+}
+
+export interface VaultScanPreview {
+  vaultPath: string;
+  vaultName: string;
+  noteCount: number;
+  imageCount: number;
+  folderCount: number;
+  sampleFolders: string[];
+  frontmatterKeys: string[];
+}
+
+export interface ImportReport {
+  worldSlug: string;
+  worldName: string;
+  importedNotes: number;
+  copiedAssets: number;
+  resolvedLinks: number;
+  unresolvedLinks: Array<{ sourceTitle: string; target: string }>;
+  warnings: string[];
+}
+
+export interface WorkspaceConfig {
+  name: string;
+  activeWorldSlug?: string;
+  studioAppearance: StudioAppearance;
+  createdAt: string;
+}
+
+export interface WorkspaceState {
+  rootPath: string;
+  config: WorkspaceConfig;
+  worlds: WorldConfig[];
+}
+
+export interface CreateWorldInput {
+  name: string;
+  subtitle?: string;
+  medium: WorldMedium;
+  preset?: WorldThemePresetId;
+}
+
+export interface CreateEntryInput {
+  worldSlug: string;
+  title: string;
+  type?: string;
+  folder?: string;
+  body?: string;
+  tags?: string[];
+  properties?: Record<string, EntryPropertyValue>;
+  coverAssetId?: string;
+  portraitAssetId?: string;
+}
+
+export interface UpdateEntryInput {
+  worldSlug: string;
+  id: string;
+  title?: string;
+  type?: string;
+  folder?: string;
+  body?: string;
+  tags?: string[];
+  properties?: Record<string, EntryPropertyValue>;
+  coverAssetId?: string | null;
+  portraitAssetId?: string | null;
+}
+
+export interface CollectionQuery {
+  worldSlug: string;
+  type?: string;
+  search?: string;
+  tag?: string;
+  sortBy?: 'updatedAt' | 'title';
+  sortDir?: 'asc' | 'desc';
+}
+
+export interface ArtQuery {
+  worldSlug: string;
+  category?: ArtCategory | 'all';
+  search?: string;
+  tag?: string;
+}
+
+export interface WorkspaceExternalChangeEvent {
+  worldSlug?: string;
+  kind: 'entry' | 'world' | 'art';
+  relativePath: string;
+}
+
+export interface DesktopBridge {
+  // Workspace lifecycle
+  getSavedWorkspacePath: () => Promise<string | null>;
+  pickFolder: (title?: string) => Promise<string | null>;
+  pickImageFiles: () => Promise<string[]>;
+  openWorkspace: (rootPath: string) => Promise<WorkspaceState>;
+  updateWorkspaceConfig: (patch: Partial<WorkspaceConfig>) => Promise<WorkspaceConfig>;
+  rebuildIndex: () => Promise<{ indexedEntries: number; indexedWorlds: number }>;
+
+  // Worlds
+  createWorld: (input: CreateWorldInput) => Promise<WorldConfig>;
+  updateWorld: (worldSlug: string, patch: Partial<Pick<WorldConfig, 'name' | 'subtitle' | 'medium' | 'coverAssetId' | 'theme' | 'entityTypes'>>) => Promise<WorldConfig>;
+  deleteWorld: (worldSlug: string) => Promise<void>;
+
+  // Entries & Collections
+  listEntries: (query: CollectionQuery) => Promise<EntrySummary[]>;
+  readEntry: (worldSlug: string, id: string) => Promise<Entry | null>;
+  createEntry: (input: CreateEntryInput) => Promise<Entry>;
+  updateEntry: (input: UpdateEntryInput) => Promise<Entry>;
+  deleteEntry: (worldSlug: string, id: string) => Promise<void>;
+  getBacklinks: (worldSlug: string, entryId: string) => Promise<BacklinkRef[]>;
+  searchGlobal: (query: string) => Promise<SearchHit[]>;
+
+  // Concept Art
+  listArtAssets: (query: ArtQuery) => Promise<ArtAsset[]>;
+  importArtFiles: (worldSlug: string, filePaths: string[], category?: ArtCategory) => Promise<ArtAsset[]>;
+  saveArtFromBuffer: (worldSlug: string, filename: string, base64Data: string, category?: ArtCategory) => Promise<ArtAsset>;
+  updateArtAsset: (worldSlug: string, assetId: string, patch: Partial<Pick<ArtAsset, 'title' | 'category' | 'tags' | 'caption'>>) => Promise<ArtAsset>;
+  deleteArtAsset: (worldSlug: string, assetId: string) => Promise<void>;
+  getArtLinkedEntries: (worldSlug: string, assetId: string) => Promise<EntrySummary[]>;
+  getAssetUrl: (worldSlug: string, relativePath: string) => string;
+
+  // Obsidian Vault Importer
+  scanObsidianVault: (vaultPath: string) => Promise<VaultScanPreview>;
+  importObsidianVault: (options: {
+    vaultPath: string;
+    targetWorldSlug?: string;
+    newWorldName?: string;
+    newWorldMedium?: WorldMedium;
+    newWorldPreset?: WorldThemePresetId;
+  }) => Promise<ImportReport>;
+
+  // External sync watcher subscription
+  onWorkspaceChanged: (cb: (event: WorkspaceExternalChangeEvent) => void) => () => void;
+}
