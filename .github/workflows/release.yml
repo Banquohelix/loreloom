@@ -46,6 +46,10 @@ jobs:
             pnpm run build
             pnpm exec electron-builder --win --publish never
           }
+          $setupExe = Get-ChildItem -Path release -Filter "*Setup*.exe" | Select-Object -First 1
+          if ($setupExe) {
+            Copy-Item -Path $setupExe.FullName -Destination "release/Loreloom-Setup-Latest.exe" -Force
+          }
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v7
