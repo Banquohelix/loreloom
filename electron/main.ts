@@ -304,6 +304,7 @@ function createWindow(): void {
     minHeight: 680,
     title: 'Loreloom',
     backgroundColor: '#18181b',
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -311,7 +312,13 @@ function createWindow(): void {
     },
   });
 
-  if (process.env.VITE_DEV_SERVER_URL || !app.isPackaged) {
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+
+  const isDevFlag = process.argv.includes('--dev') || Boolean(process.env.VITE_DEV_SERVER_URL);
+  if (isDevFlag && !app.isPackaged) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
     mainWindow.loadURL(devUrl).catch(() => {
       mainWindow?.loadFile(path.join(__dirname, '../../dist/index.html'));

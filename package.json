@@ -6,7 +6,7 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "vite",
-    "dev:electron": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.node.json && electron .\"",
+    "dev:electron": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.node.json && electron . --dev\"",
     "build:electron": "tsc -p tsconfig.node.json",
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.node.json",
     "package": "pnpm run build && electron-builder --win",
