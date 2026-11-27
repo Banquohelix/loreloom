@@ -29,6 +29,7 @@ import { WorldThemeDrawer } from './components/WorldThemeDrawer';
 import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
 import { IntakeSyncModal } from './components/IntakeSyncModal';
+import { WorldToolsModal } from './components/WorldToolsModal';
 import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
@@ -49,6 +50,7 @@ export default function App() {
   const [entityTypeModalOpen, setEntityTypeModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
+  const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
@@ -354,6 +356,7 @@ export default function App() {
         onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
         onOpenImportModal={() => setImportModalOpen(true)}
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
+        onOpenWorldToolsModal={() => setWorldToolsModalOpen(true)}
         onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
         onToggleAppearance={handleToggleAppearance}
@@ -508,6 +511,14 @@ export default function App() {
           onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
           onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           onClose={() => setIntakeModalOpen(false)}
+        />
+      )}
+
+      {worldToolsModalOpen && activeWorld && (
+        <WorldToolsModal
+          world={activeWorld}
+          onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
+          onClose={() => setWorldToolsModalOpen(false)}
         />
       )}
 

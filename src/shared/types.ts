@@ -148,6 +148,24 @@ export interface WorldMapDef {
   updatedAt: string;
 }
 
+export interface DuplicateGroup {
+  key: string;
+  title: string;
+  entries: Array<EntrySummary & { bodyLength: number }>;
+}
+
+export interface ArtLinkSuggestion {
+  assetId: string;
+  assetTitle: string;
+  assetRelativePath: string;
+  entryId: string;
+  entryTitle: string;
+  entryType: string;
+  suggestedSlot: 'cover' | 'portrait';
+  confidence: 'high' | 'medium';
+  reason: string;
+}
+
 export interface SearchHit {
   entryId: string;
   worldSlug: string;
@@ -328,6 +346,15 @@ export interface DesktopBridge {
     patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
   ) => Promise<WorldMapDef>;
   deleteMap: (worldSlug: string, mapId: string) => Promise<void>;
+
+  // World Hygiene (Duplicate Merger & Art Auto-Linker)
+  findDuplicates: (worldSlug: string) => Promise<DuplicateGroup[]>;
+  mergeDuplicates: (
+    worldSlug: string,
+    keepEntryId: string,
+    removeEntryIds: string[]
+  ) => Promise<Entry>;
+  findArtLinkSuggestions: (worldSlug: string) => Promise<ArtLinkSuggestion[]>;
 
   // Obsidian Vault Importer
   scanObsidianVault: (vaultPath: string) => Promise<VaultScanPreview>;

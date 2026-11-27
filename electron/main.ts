@@ -9,6 +9,11 @@ import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { checkLatestGitHubRelease } from '../src/core/update-checker';
+import {
+  findArtLinkSuggestions,
+  findDuplicateGroups,
+  mergeDuplicateEntries,
+} from '../src/core/world-hygiene';
 import { generateWorldPromptFramework } from '../src/shared/prompt-framework';
 import type {
   ArtCategory,
@@ -368,6 +373,32 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('map:delete', async (_e, worldSlug: string, mapId: string) => {
     await requireStore().deleteMap(worldSlug, mapId);
+  });
+
+  ipcMain.handle('hygiene:duplicates', async (_e, worldSlug: string) => {
+    const entries = await requireStore().listAllEntriesInWorld(worldSlug);
+    return findDuplicateGroups(entries);
+  });
+
+  ipcMain.handle(
+    'hygiene:merge',
+    async (_e, worldSlug: string, keepEntryId: string, removeEntryIds: string[]) => {
+      const s = requireStore();
+      const idx = requireIndex();
+      const merged = await mergeDuplicateEntries(s, worldSlug, keepEntryId, removeEntryIds);
+      const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+      if (world) await idx.syncWorld(s, world);
+      return merged;
+    }
+  );
+
+  ipcMain.handle('hygiene:art-suggestions', async (_e, worldSlug: string) => {
+    const s = requireStore();
+    const [entries, assets] = await Promise.all([
+      s.listAllEntriesInWorld(worldSlug),
+      s.listArtAssets(worldSlug),
+    ]);
+    return findArtLinkSuggestions(entries, assets);
   });
 
   ipcMain.handle('obsidian:scan', async (_e, vaultPath: string) => {

@@ -321,6 +321,10 @@ function createBrowserPreviewBridge(): DesktopBridge {
     deleteMap: async (_worldSlug, mapId) => {
       maps = maps.filter((m) => m.id !== mapId);
     },
+    findDuplicates: async () => [],
+    mergeDuplicates: async (_worldSlug, keepEntryId) =>
+      entries.find((e) => e.id === keepEntryId)!,
+    findArtLinkSuggestions: async () => [],
     scanObsidianVault: async (vaultPath): Promise<VaultScanPreview> => ({
       vaultPath,
       vaultName: 'Sample Vault',

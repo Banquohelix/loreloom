@@ -49,6 +49,11 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke('map:update', worldSlug, mapId, patch),
   deleteMap: (worldSlug, mapId) => ipcRenderer.invoke('map:delete', worldSlug, mapId),
 
+  findDuplicates: (worldSlug) => ipcRenderer.invoke('hygiene:duplicates', worldSlug),
+  mergeDuplicates: (worldSlug, keepEntryId, removeEntryIds) =>
+    ipcRenderer.invoke('hygiene:merge', worldSlug, keepEntryId, removeEntryIds),
+  findArtLinkSuggestions: (worldSlug) => ipcRenderer.invoke('hygiene:art-suggestions', worldSlug),
+
   scanObsidianVault: (vaultPath) => ipcRenderer.invoke('obsidian:scan', vaultPath),
   importObsidianVault: (options) => ipcRenderer.invoke('obsidian:import', options),
 

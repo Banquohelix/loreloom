@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
   Settings2,
+  Sparkles,
   Sun,
 } from 'lucide-react';
 import type { EntrySummary, StudioAppearance, WorldConfig } from '@shared/types';
@@ -47,6 +48,7 @@ interface SidebarProps {
   onOpenThemeDrawer: () => void;
   onOpenImportModal: () => void;
   onOpenIntakeModal: () => void;
+  onOpenWorldToolsModal: () => void;
   onOpenUpdateModal: () => void;
   onOpenQuickSwitcher: () => void;
   onToggleAppearance: () => void;
@@ -72,6 +74,7 @@ export function Sidebar({
   onOpenThemeDrawer,
   onOpenImportModal,
   onOpenIntakeModal,
+  onOpenWorldToolsModal,
   onOpenUpdateModal,
   onOpenQuickSwitcher,
   onToggleAppearance,
@@ -369,6 +372,13 @@ export function Sidebar({
                   {triageCount}
                 </span>
               )}
+            </button>
+            <button
+              onClick={onOpenWorldToolsModal}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Cleanup & Auto-Link
             </button>
             <button
               onClick={onOpenThemeDrawer}
