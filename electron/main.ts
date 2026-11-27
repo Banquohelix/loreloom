@@ -9,6 +9,7 @@ import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { checkLatestGitHubRelease } from '../src/core/update-checker';
+import { generateWorldPromptFramework } from '../src/shared/prompt-framework';
 import type {
   ArtCategory,
   ArtQuery,
@@ -386,6 +387,28 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('intake:run-sync', async (_e, worldSlug: string) => {
     return runWorldIntakeSyncAndNotify(worldSlug);
+  });
+
+  ipcMain.handle('intake:reclassify-triage', async (_e, worldSlug: string) => {
+    const s = requireStore();
+    const idx = requireIndex();
+    const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+    if (!world) throw new Error(`World not found: ${worldSlug}`);
+    const report = await intakeEngine.reclassifyTriageItems(s, world);
+    if (report.reclassifiedEntries > 0) {
+      await idx.syncWorld(s, world);
+    }
+    return report;
+  });
+
+  ipcMain.handle('intake:export-prompt-framework', async (_e, worldSlug: string) => {
+    const s = requireStore();
+    const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+    if (!world) throw new Error(`World not found: ${worldSlug}`);
+    const markdown = generateWorldPromptFramework(world);
+    const outPath = path.join(s.worldDir(world.slug), 'AI-PROMPT-FRAMEWORK.md');
+    await fs.writeFile(outPath, markdown, 'utf8');
+    return outPath;
   });
 
   ipcMain.handle('update:get-version', async () => {

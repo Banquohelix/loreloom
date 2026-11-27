@@ -311,8 +311,15 @@ function createBrowserPreviewBridge(): DesktopBridge {
       warnings: [],
       syncedAt: new Date().toISOString(),
     }),
+    reclassifyTriageItems: async () => ({
+      reclassifiedEntries: 0,
+      reclassifiedArt: 0,
+      remainingTriage: 0,
+    }),
+    exportWorldPromptFramework: async (worldSlug) =>
+      `Preview://OneDrive/Loreloom/worlds/${worldSlug}/AI-PROMPT-FRAMEWORK.md`,
     onIntakeSynced: () => () => {},
-    getAppVersion: async () => '0.3.0',
+    getAppVersion: async () => '0.4.0',
     checkForUpdates: async () => ({
       status: 'up-to-date',
       currentVersion: '0.3.0',

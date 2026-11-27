@@ -8,6 +8,7 @@ import {
   type EntryPropertyValue,
   type IntakeImportedItem,
   type IntakeSyncReport,
+  type ReclassifyTriageReport,
   type WorldConfig,
 } from '../shared/types';
 import type { WorkspaceStore } from './workspace-store';
@@ -500,5 +501,59 @@ export class IntakeEngine {
       warnings,
       syncedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Re-runs the offline auto-sorter against every Entry and ArtAsset currently
+   * tagged `#needs-triage` in a World (e.g. right after adding a custom EntityType
+   * such as Vehicles). Items that now classify cleanly are automatically slotted
+   * and have `#needs-triage` removed.
+   */
+  async reclassifyTriageItems(
+    store: WorkspaceStore,
+    world: WorldConfig
+  ): Promise<ReclassifyTriageReport> {
+    let reclassifiedEntries = 0;
+    let reclassifiedArt = 0;
+    let remainingTriage = 0;
+
+    const entries = await store.listAllEntriesInWorld(world.slug);
+    for (const entry of entries) {
+      if (!entry.tags.includes(NEEDS_TRIAGE_TAG)) continue;
+      const classification = classifyTextNote(
+        `${entry.relativePath} ${entry.title}`,
+        entry.body,
+        world.entityTypes
+      );
+      if (!classification.needsTriage) {
+        await store.updateEntry({
+          worldSlug: world.slug,
+          id: entry.id,
+          type: classification.typeId,
+          properties: { ...classification.extractedProperties, ...entry.properties },
+          tags: entry.tags.filter((t) => t !== NEEDS_TRIAGE_TAG),
+        });
+        reclassifiedEntries++;
+      } else {
+        remainingTriage++;
+      }
+    }
+
+    const assets = await store.listArtAssets(world.slug);
+    for (const asset of assets) {
+      if (!asset.tags.includes(NEEDS_TRIAGE_TAG)) continue;
+      const classification = classifyArtAsset(`${asset.filename} ${asset.title}`);
+      if (!classification.needsTriage) {
+        await store.updateArtAsset(world.slug, asset.id, {
+          category: classification.category,
+          tags: asset.tags.filter((t) => t !== NEEDS_TRIAGE_TAG),
+        });
+        reclassifiedArt++;
+      } else {
+        remainingTriage++;
+      }
+    }
+
+    return { reclassifiedEntries, reclassifiedArt, remainingTriage };
   }
 }

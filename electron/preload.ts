@@ -55,6 +55,10 @@ const bridge: DesktopBridge = {
   setWorldIntakeFolders: (worldSlug, folders) =>
     ipcRenderer.invoke('intake:set-folders', worldSlug, folders),
   runWorldIntakeSync: (worldSlug) => ipcRenderer.invoke('intake:run-sync', worldSlug),
+  reclassifyTriageItems: (worldSlug) =>
+    ipcRenderer.invoke('intake:reclassify-triage', worldSlug),
+  exportWorldPromptFramework: (worldSlug) =>
+    ipcRenderer.invoke('intake:export-prompt-framework', worldSlug),
   onIntakeSynced: (cb) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: IntakeSyncReport) => cb(payload);
     ipcRenderer.on('intake:synced', listener);

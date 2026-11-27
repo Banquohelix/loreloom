@@ -229,6 +229,12 @@ export interface IntakeSyncReport {
   syncedAt: string;
 }
 
+export interface ReclassifyTriageReport {
+  reclassifiedEntries: number;
+  reclassifiedArt: number;
+  remainingTriage: number;
+}
+
 export interface UpdateCheckResult {
   status: 'up-to-date' | 'update-available' | 'auth-required' | 'error';
   currentVersion: string;
@@ -289,6 +295,8 @@ export interface DesktopBridge {
   getWorldIntakeFolders: (worldSlug: string) => Promise<string[]>;
   setWorldIntakeFolders: (worldSlug: string, folders: string[]) => Promise<string[]>;
   runWorldIntakeSync: (worldSlug: string) => Promise<IntakeSyncReport>;
+  reclassifyTriageItems: (worldSlug: string) => Promise<ReclassifyTriageReport>;
+  exportWorldPromptFramework: (worldSlug: string) => Promise<string>;
   onIntakeSynced: (cb: (report: IntakeSyncReport) => void) => () => void;
 
   // In-App Update Checker

@@ -112,4 +112,41 @@ describe('IntakeEngine', () => {
     expect(allEntries).toHaveLength(2);
     expect(allEntries.find((e) => e.title === 'Ash Warden')?.body).toContain('cinder lance');
   });
+
+  it('reclassifies previously triaged items after a new custom EntityType (like Vehicles) is added', async () => {
+    let world = await store.createWorld({ name: 'Neon Ash', medium: 'novel' });
+    await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Nomad Ash Vehicle',
+      type: 'page',
+      folder: 'intake',
+      tags: ['intake', NEEDS_TRIAGE_TAG],
+      body: '- **Manufacturer:** Helix Works\nFast armored skiff.',
+    });
+
+    // Add custom Vehicle type to the world
+    world = await store.updateWorld(world.slug, {
+      entityTypes: [
+        ...world.entityTypes,
+        {
+          id: 'vehicle',
+          name: 'Vehicle',
+          pluralName: 'Vehicles',
+          icon: 'rocket',
+          color: '#0ea5e9',
+          defaultView: 'gallery',
+          fields: [{ key: 'manufacturer', label: 'Manufacturer', fieldType: 'text' }],
+        },
+      ],
+    });
+
+    const report = await engine.reclassifyTriageItems(store, world);
+    expect(report.reclassifiedEntries).toBe(1);
+    expect(report.remainingTriage).toBe(0);
+
+    const updated = (await store.listAllEntriesInWorld(world.slug))[0];
+    expect(updated.type).toBe('vehicle');
+    expect(updated.tags).not.toContain(NEEDS_TRIAGE_TAG);
+    expect(updated.properties.manufacturer).toBe('Helix Works');
+  });
 });
