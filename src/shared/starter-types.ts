@@ -77,7 +77,7 @@ export const STARTER_ENTITY_TYPES: EntityTypeDef[] = [
     pluralName: 'Timeline',
     icon: 'clock',
     color: '#0284c7',
-    defaultView: 'table',
+    defaultView: 'timeline',
     builtIn: true,
     fields: [
       { key: 'date', label: 'In-World Date', fieldType: 'text' },

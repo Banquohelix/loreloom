@@ -42,7 +42,7 @@ export interface EntityTypeDef {
   pluralName: string;
   icon: string;
   color: string;
-  defaultView: 'gallery' | 'table';
+  defaultView: 'gallery' | 'table' | 'timeline';
   fields: PropertyFieldDef[];
   builtIn?: boolean;
 }

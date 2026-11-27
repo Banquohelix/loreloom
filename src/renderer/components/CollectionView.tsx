@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { LayoutGrid, Plus, Search, Table as TableIcon } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Clock, LayoutGrid, Plus, Search, Table as TableIcon } from 'lucide-react';
 import type { ArtAsset, EntityTypeDef, EntrySummary, WorldConfig } from '@shared/types';
+import { groupEntriesForTimeline } from '@shared/timeline-utils';
 import { getBridge } from '../lib/bridge';
 import { EntityIcon } from './IconBadge';
 
@@ -22,8 +23,16 @@ export function CollectionView({
   onSelectEntry,
 }: CollectionViewProps) {
   const bridge = getBridge();
-  const [viewMode, setViewMode] = useState<'gallery' | 'table'>(entityType.defaultView);
+  const [viewMode, setViewMode] = useState<'gallery' | 'table' | 'timeline'>(
+    entityType.id === 'event' ? 'timeline' : entityType.defaultView
+  );
   const [search, setSearch] = useState('');
+  const [eraFilter, setEraFilter] = useState<string>('all');
+
+  useEffect(() => {
+    setViewMode(entityType.id === 'event' ? 'timeline' : entityType.defaultView);
+    setEraFilter('all');
+  }, [entityType.id, entityType.defaultView]);
 
   const assetById = useMemo(() => {
     const m = new Map<string, ArtAsset>();
@@ -43,6 +52,15 @@ export function CollectionView({
             e.tags.some((t) => t.toLowerCase().includes(q))
       );
   }, [entries, entityType.id, search]);
+
+  const timelineGroups = useMemo(() => groupEntriesForTimeline(filtered), [filtered]);
+  const visibleTimelineGroups = useMemo(
+    () =>
+      eraFilter === 'all'
+        ? timelineGroups
+        : timelineGroups.filter((g) => g.era === eraFilter),
+    [timelineGroups, eraFilter]
+  );
 
   return (
     <div className="flex-1 h-full overflow-y-auto world-canvas">
@@ -95,6 +113,15 @@ export function CollectionView({
                 title="Table View"
               >
                 <TableIcon className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setViewMode('timeline')}
+                className={`p-1.5 rounded-md transition cursor-pointer ${
+                  viewMode === 'timeline' ? 'bg-[var(--studio-surface)] shadow-xs' : 'opacity-60'
+                }`}
+                title="Timeline & Era View"
+              >
+                <Clock className="w-3.5 h-3.5" />
               </button>
             </div>
 
@@ -173,6 +200,137 @@ export function CollectionView({
                 </button>
               );
             })}
+          </div>
+        ) : viewMode === 'timeline' ? (
+          <div className="space-y-6">
+            {/* Era filter chips */}
+            {timelineGroups.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => setEraFilter('all')}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition cursor-pointer ${
+                    eraFilter === 'all'
+                      ? 'text-white'
+                      : 'bg-[var(--world-canvas-muted)] text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                  }`}
+                  style={
+                    eraFilter === 'all' ? { backgroundColor: 'var(--world-accent)' } : undefined
+                  }
+                >
+                  All Eras ({filtered.length})
+                </button>
+                {timelineGroups.map((g) => (
+                  <button
+                    key={g.era}
+                    onClick={() => setEraFilter(g.era)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition cursor-pointer ${
+                      eraFilter === g.era
+                        ? 'text-white'
+                        : 'bg-[var(--world-canvas-muted)] text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                    }`}
+                    style={
+                      eraFilter === g.era ? { backgroundColor: 'var(--world-accent)' } : undefined
+                    }
+                  >
+                    {g.era} ({g.items.length})
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Era Bands + Vertical Spine */}
+            <div className="space-y-8">
+              {visibleTimelineGroups.map((group) => (
+                <div key={group.era} className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <span
+                      className="px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider"
+                      style={{
+                        backgroundColor: 'var(--world-accent-soft)',
+                        color: 'var(--world-accent)',
+                      }}
+                    >
+                      {group.era}
+                    </span>
+                    <div className="h-px flex-1 bg-[var(--world-canvas-border)]" />
+                    <span className="text-[11px] text-[var(--studio-muted)]">
+                      {group.items.length} {group.items.length === 1 ? 'event' : 'events'}
+                    </span>
+                  </div>
+
+                  <div className="relative pl-7 space-y-4 before:content-[''] before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-0.5 before:bg-[var(--world-canvas-border)]">
+                    {group.items.map(({ entry, dateLabel, impact }) => {
+                      const art =
+                        (entry.coverAssetId && assetById.get(entry.coverAssetId)) ||
+                        (entry.portraitAssetId && assetById.get(entry.portraitAssetId));
+                      const isEpoch = impact.toLowerCase().includes('epoch');
+                      return (
+                        <div key={entry.id} className="relative">
+                          <span
+                            className={`absolute -left-[22px] top-4 rounded-full border-2 border-[var(--world-canvas-bg)] ${
+                              isEpoch ? 'w-4 h-4 -left-[24px] ring-4 ring-amber-500/25' : 'w-3 h-3'
+                            }`}
+                            style={{ backgroundColor: 'var(--world-accent)' }}
+                          />
+                          <button
+                            onClick={() => onSelectEntry(entry.id)}
+                            className="w-full text-left p-4 rounded-2xl border border-[var(--world-canvas-border)] bg-[var(--world-canvas-muted)]/45 hover:bg-[var(--world-canvas-muted)] transition flex items-start gap-4 cursor-pointer"
+                          >
+                            {art && (
+                              <img
+                                src={bridge.getAssetUrl(world.slug, art.relativePath)}
+                                alt={entry.title}
+                                className="w-20 h-20 rounded-xl object-cover shrink-0 border border-[var(--world-canvas-border)]"
+                              />
+                            )}
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className="world-heading text-xl font-semibold">
+                                  {entry.title}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {dateLabel && (
+                                    <span className="px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/10 text-[11px] font-mono">
+                                      {dateLabel}
+                                    </span>
+                                  )}
+                                  {impact && (
+                                    <span
+                                      className="px-2 py-0.5 rounded-full text-[10px] font-medium"
+                                      style={{
+                                        backgroundColor: 'var(--world-accent-soft)',
+                                        color: 'var(--world-accent)',
+                                      }}
+                                    >
+                                      {impact}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="text-xs text-[var(--studio-muted)] line-clamp-2">
+                                {entry.excerpt || 'No summary yet…'}
+                              </p>
+                              {entry.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-1">
+                                  {entry.tags.slice(0, 4).map((t) => (
+                                    <span
+                                      key={t}
+                                      className="px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 text-[10px] text-[var(--studio-muted)]"
+                                    >
+                                      #{t}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <div className="rounded-xl border border-[var(--world-canvas-border)] overflow-hidden">
