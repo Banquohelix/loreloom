@@ -170,6 +170,20 @@ export interface MoodboardDef {
   updatedAt: string;
 }
 
+export interface ExportWorldBibleOptions {
+  worldSlug: string;
+  format: 'html' | 'pdf';
+  includedTypeIds: string[];
+  includeArtGallery: boolean;
+  appearance: StudioAppearance;
+}
+
+export interface ExportWorldBibleResult {
+  outputPath: string;
+  entryCount: number;
+  artCount: number;
+}
+
 export interface DuplicateGroup {
   key: string;
   title: string;
@@ -378,6 +392,10 @@ export interface DesktopBridge {
     patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
   ) => Promise<MoodboardDef>;
   deleteBoard: (worldSlug: string, boardId: string) => Promise<void>;
+
+  // World Bible Export (HTML / PDF)
+  exportWorldBible: (options: ExportWorldBibleOptions) => Promise<ExportWorldBibleResult | null>;
+  openLocalFile: (filePath: string) => Promise<void>;
 
   // World Hygiene (Duplicate Merger & Art Auto-Linker)
   findDuplicates: (worldSlug: string) => Promise<DuplicateGroup[]>;

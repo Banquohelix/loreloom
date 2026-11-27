@@ -345,6 +345,8 @@ function createBrowserPreviewBridge(): DesktopBridge {
     deleteBoard: async (_worldSlug, boardId) => {
       boards = boards.filter((b) => b.id !== boardId);
     },
+    exportWorldBible: async () => null,
+    openLocalFile: async () => {},
     findDuplicates: async () => [],
     mergeDuplicates: async (_worldSlug, keepEntryId) =>
       entries.find((e) => e.id === keepEntryId)!,

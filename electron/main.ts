@@ -14,6 +14,7 @@ import {
   findDuplicateGroups,
   mergeDuplicateEntries,
 } from '../src/core/world-hygiene';
+import { buildWorldBibleHtml } from '../src/core/bible-exporter';
 import { generateWorldPromptFramework } from '../src/shared/prompt-framework';
 import type {
   ArtCategory,
@@ -389,6 +390,54 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('board:delete', async (_e, worldSlug: string, boardId: string) => {
     await requireStore().deleteBoard(worldSlug, boardId);
+  });
+
+  ipcMain.handle('bible:export', async (_e, options) => {
+    const s = requireStore();
+    const world = (await s.listWorlds()).find((w) => w.slug === options.worldSlug);
+    if (!world) throw new Error(`World not found: ${options.worldSlug}`);
+
+    const ext = options.format === 'pdf' ? 'pdf' : 'html';
+    const saveRes = await dialog.showSaveDialog({
+      title: `Export ${world.name} World Bible`,
+      defaultPath: `${world.slug}-world-bible.${ext}`,
+      filters:
+        options.format === 'pdf'
+          ? [{ name: 'PDF Document', extensions: ['pdf'] }]
+          : [{ name: 'Standalone HTML', extensions: ['html'] }],
+    });
+    if (saveRes.canceled || !saveRes.filePath) return null;
+
+    const rendered = await buildWorldBibleHtml(s, world, options);
+
+    if (options.format === 'html') {
+      await fs.writeFile(saveRes.filePath, rendered.html, 'utf8');
+    } else {
+      const tempHtmlPath = path.join(os.tmpdir(), `loreloom-bible-${Date.now()}.html`);
+      await fs.writeFile(tempHtmlPath, rendered.html, 'utf8');
+      const win = new BrowserWindow({ show: false, width: 1000, height: 1200 });
+      try {
+        await win.loadFile(tempHtmlPath);
+        const pdfBuffer = await win.webContents.printToPDF({
+          printBackground: true,
+          margins: { marginType: 'default' },
+        });
+        await fs.writeFile(saveRes.filePath, pdfBuffer);
+      } finally {
+        win.destroy();
+        await fs.unlink(tempHtmlPath).catch(() => {});
+      }
+    }
+
+    return {
+      outputPath: saveRes.filePath,
+      entryCount: rendered.entryCount,
+      artCount: rendered.artCount,
+    };
+  });
+
+  ipcMain.handle('shell:open-local-file', async (_e, filePath: string) => {
+    await shell.openPath(filePath);
   });
 
   ipcMain.handle('hygiene:duplicates', async (_e, worldSlug: string) => {

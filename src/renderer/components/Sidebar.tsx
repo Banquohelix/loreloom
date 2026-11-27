@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Download,
@@ -45,6 +46,7 @@ interface SidebarProps {
   onOpenImportModal: () => void;
   onOpenIntakeModal: () => void;
   onOpenWorldToolsModal: () => void;
+  onOpenExportBibleModal: () => void;
   onOpenUpdateModal: () => void;
   onOpenQuickSwitcher: () => void;
   onToggleAppearance: () => void;
@@ -71,6 +73,7 @@ export function Sidebar({
   onOpenImportModal,
   onOpenIntakeModal,
   onOpenWorldToolsModal,
+  onOpenExportBibleModal,
   onOpenUpdateModal,
   onOpenQuickSwitcher,
   onToggleAppearance,
@@ -386,6 +389,13 @@ export function Sidebar({
             >
               <Sparkles className="w-3.5 h-3.5" />
               Cleanup & Auto-Link
+            </button>
+            <button
+              onClick={onOpenExportBibleModal}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              Export World Bible
             </button>
             <button
               onClick={onOpenThemeDrawer}

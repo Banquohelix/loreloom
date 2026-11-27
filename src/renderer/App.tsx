@@ -37,6 +37,7 @@ import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
 import { IntakeSyncModal } from './components/IntakeSyncModal';
 import { WorldToolsModal } from './components/WorldToolsModal';
+import { ExportBibleModal } from './components/ExportBibleModal';
 import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
@@ -80,6 +81,7 @@ export default function App() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
+  const [exportBibleModalOpen, setExportBibleModalOpen] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
@@ -453,6 +455,7 @@ export default function App() {
         onOpenImportModal={() => setImportModalOpen(true)}
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
         onOpenWorldToolsModal={() => setWorldToolsModalOpen(true)}
+        onOpenExportBibleModal={() => setExportBibleModalOpen(true)}
         onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
         onToggleAppearance={handleToggleAppearance}
@@ -783,6 +786,14 @@ export default function App() {
           world={activeWorld}
           onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
           onClose={() => setWorldToolsModalOpen(false)}
+        />
+      )}
+
+      {exportBibleModalOpen && activeWorld && (
+        <ExportBibleModal
+          world={activeWorld}
+          defaultAppearance={appearance}
+          onClose={() => setExportBibleModalOpen(false)}
         />
       )}
 
