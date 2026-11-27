@@ -88,6 +88,7 @@ export interface EntrySummary {
   title: string;
   slug: string;
   type: string;
+  secondaryTypes?: string[];
   folder: string;
   relativePath: string;
   tags: string[];
@@ -163,6 +164,7 @@ export interface CreateEntryInput {
   worldSlug: string;
   title: string;
   type?: string;
+  secondaryTypes?: string[];
   folder?: string;
   body?: string;
   tags?: string[];
@@ -176,6 +178,7 @@ export interface UpdateEntryInput {
   id: string;
   title?: string;
   type?: string;
+  secondaryTypes?: string[];
   folder?: string;
   body?: string;
   tags?: string[];

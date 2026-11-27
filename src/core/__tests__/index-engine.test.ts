@@ -57,4 +57,22 @@ describe('IndexEngine', () => {
     expect(hits[0].entryId).toBe(citadel.id);
     expect(hits[0].worldName).toBe('Shattered Crown');
   });
+
+  it('returns multi-collection entries under both their primary type and secondaryTypes', async () => {
+    const world = await store.createWorld({ name: 'Neon Ash', medium: 'video-game' });
+    const skiff = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'K-80 Civic Runner',
+      type: 'vehicle',
+      secondaryTypes: ['item'],
+      body: 'Boxy urban hatchback converted into a combat frame.',
+    });
+
+    await index.rebuildWorkspace(store);
+
+    const vehicles = index.queryCollection({ worldSlug: world.slug, type: 'vehicle' });
+    const items = index.queryCollection({ worldSlug: world.slug, type: 'item' });
+    expect(vehicles.map((e) => e.id)).toContain(skiff.id);
+    expect(items.map((e) => e.id)).toContain(skiff.id);
+  });
 });

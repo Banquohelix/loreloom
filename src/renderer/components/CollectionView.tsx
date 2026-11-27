@@ -34,7 +34,7 @@ export function CollectionView({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return entries
-      .filter((e) => e.type === entityType.id)
+      .filter((e) => e.type === entityType.id || (e.secondaryTypes ?? []).includes(entityType.id))
       .filter((e) =>
         !q
           ? true

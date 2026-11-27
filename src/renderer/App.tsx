@@ -415,6 +415,9 @@ export default function App() {
                 entry={currentEntry}
                 backlinks={backlinks}
                 onChangeType={(type) => handleUpdateCurrentEntry({ type })}
+                onChangeSecondaryTypes={(secondaryTypes) =>
+                  handleUpdateCurrentEntry({ secondaryTypes })
+                }
                 onChangeFolder={(folder) => handleUpdateCurrentEntry({ folder })}
                 onUpdateProperties={(properties) => handleUpdateCurrentEntry({ properties })}
                 onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}

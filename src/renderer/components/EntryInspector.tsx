@@ -11,6 +11,7 @@ interface EntryInspectorProps {
   entry: Entry;
   backlinks: BacklinkRef[];
   onChangeType: (typeId: string) => Promise<void>;
+  onChangeSecondaryTypes: (secondaryTypes: string[]) => Promise<void>;
   onChangeFolder: (folder: string) => Promise<void>;
   onUpdateProperties: (properties: Record<string, EntryPropertyValue>) => Promise<void>;
   onNavigateEntry: (entryId: string) => void;
@@ -22,12 +23,22 @@ export function EntryInspector({
   entry,
   backlinks,
   onChangeType,
+  onChangeSecondaryTypes,
   onChangeFolder,
   onUpdateProperties,
   onNavigateEntry,
   onDeleteEntry,
 }: EntryInspectorProps) {
   const activeType = world.entityTypes.find((t) => t.id === entry.type) ?? world.entityTypes[0];
+  const secondaryTypes = entry.secondaryTypes ?? [];
+
+  const toggleSecondaryType = (typeId: string) => {
+    if (typeId === entry.type) return;
+    const next = secondaryTypes.includes(typeId)
+      ? secondaryTypes.filter((t) => t !== typeId)
+      : [...secondaryTypes, typeId];
+    onChangeSecondaryTypes(next);
+  };
 
   const handleFieldChange = (key: string, value: string) => {
     const next = { ...entry.properties, [key]: value };
@@ -46,7 +57,7 @@ export function EntryInspector({
           Classification
         </div>
         <div>
-          <label className="block text-xs text-[var(--studio-muted)] mb-1">Entity Type</label>
+          <label className="block text-xs text-[var(--studio-muted)] mb-1">Primary Collection</label>
           <select
             value={entry.type}
             onChange={(e) => onChangeType(e.target.value)}
@@ -58,6 +69,33 @@ export function EntryInspector({
               </option>
             ))}
           </select>
+        </div>
+        <div>
+          <label className="block text-xs text-[var(--studio-muted)] mb-1.5">
+            Also Appears In
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {world.entityTypes
+              .filter((et) => et.id !== entry.type)
+              .map((et) => {
+                const active = secondaryTypes.includes(et.id);
+                return (
+                  <button
+                    key={et.id}
+                    type="button"
+                    onClick={() => toggleSecondaryType(et.id)}
+                    className={`px-2 py-0.5 rounded-full text-[11px] border transition cursor-pointer ${
+                      active
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium'
+                        : 'border-[var(--studio-border)] text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                    }`}
+                  >
+                    {active ? '✓ ' : '+ '}
+                    {et.name}
+                  </button>
+                );
+              })}
+          </div>
         </div>
         <div>
           <label className="block text-xs text-[var(--studio-muted)] mb-1">Folder</label>

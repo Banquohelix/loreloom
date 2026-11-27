@@ -80,6 +80,11 @@ export function Sidebar({
     const map: Record<string, number> = {};
     for (const e of entries) {
       map[e.type] = (map[e.type] || 0) + 1;
+      for (const sec of e.secondaryTypes ?? []) {
+        if (sec !== e.type) {
+          map[sec] = (map[sec] || 0) + 1;
+        }
+      }
     }
     return map;
   }, [entries]);

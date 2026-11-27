@@ -37,6 +37,7 @@ interface EntryRow {
   title: string;
   slug: string;
   type: string;
+  secondary_types_json: string;
   folder: string;
   relative_path: string;
   tags_json: string;
@@ -76,6 +77,7 @@ export class IndexEngine {
         title TEXT NOT NULL,
         slug TEXT NOT NULL,
         type TEXT NOT NULL,
+        secondary_types_json TEXT NOT NULL DEFAULT '[]',
         folder TEXT NOT NULL,
         relative_path TEXT NOT NULL,
         tags_json TEXT NOT NULL,
@@ -108,6 +110,12 @@ export class IndexEngine {
         body
       );
     `);
+
+    // Non-destructive migration for existing local index.db files
+    const cols = this.db.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'secondary_types_json')) {
+      this.db.exec("ALTER TABLE entries ADD COLUMN secondary_types_json TEXT NOT NULL DEFAULT '[]'");
+    }
   }
 
   close(): void {
@@ -163,8 +171,8 @@ export class IndexEngine {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO entries
-        (id, world_slug, title, slug, type, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt, body)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt, body)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         entry.id,
@@ -172,6 +180,7 @@ export class IndexEngine {
         entry.title,
         entry.slug,
         entry.type,
+        JSON.stringify(entry.secondaryTypes ?? []),
         entry.folder,
         entry.relativePath,
         JSON.stringify(entry.tags),
@@ -211,8 +220,8 @@ export class IndexEngine {
     const params: Array<string> = [query.worldSlug];
 
     if (query.type && query.type !== 'all') {
-      clauses.push('type = ?');
-      params.push(query.type);
+      clauses.push('(type = ? OR secondary_types_json LIKE ?)');
+      params.push(query.type, `%"${query.type}"%`);
     }
 
     if (query.search && query.search.trim()) {
@@ -230,7 +239,7 @@ export class IndexEngine {
     const orderDir = query.sortDir === 'asc' ? 'ASC' : 'DESC';
 
     const sql = `
-      SELECT id, world_slug, title, slug, type, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
+      SELECT id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
       FROM entries
       WHERE ${clauses.join(' AND ')}
       ORDER BY ${orderCol} ${orderDir}
@@ -269,7 +278,7 @@ export class IndexEngine {
   getEntriesLinkingAsset(worldSlug: string, assetId: string, assetFilename: string): EntrySummary[] {
     const rows = this.db
       .prepare(
-        `SELECT id, world_slug, title, slug, type, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
+        `SELECT id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
          FROM entries
          WHERE world_slug = ?
            AND (cover_asset_id = ? OR portrait_asset_id = ? OR body LIKE ?)`
@@ -319,6 +328,7 @@ export class IndexEngine {
       title: row.title,
       slug: row.slug,
       type: row.type,
+      secondaryTypes: JSON.parse(row.secondary_types_json || '[]'),
       folder: row.folder,
       relativePath: row.relative_path,
       tags: JSON.parse(row.tags_json || '[]'),

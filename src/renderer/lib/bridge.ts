@@ -103,6 +103,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
     title: e.title,
     slug: e.slug,
     type: e.type,
+    secondaryTypes: e.secondaryTypes ?? [],
     folder: e.folder,
     relativePath: e.relativePath,
     tags: e.tags,
@@ -151,7 +152,11 @@ function createBrowserPreviewBridge(): DesktopBridge {
     listEntries: async (query: CollectionQuery) =>
       entries
         .filter((e) => e.worldSlug === query.worldSlug)
-        .filter((e) => (!query.type || query.type === 'all' ? true : e.type === query.type))
+        .filter((e) =>
+          !query.type || query.type === 'all'
+            ? true
+            : e.type === query.type || (e.secondaryTypes ?? []).includes(query.type)
+        )
         .filter((e) =>
           query.search
             ? e.title.toLowerCase().includes(query.search.toLowerCase()) ||
@@ -191,6 +196,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
           ...e,
           title: input.title ?? e.title,
           type: input.type ?? e.type,
+          secondaryTypes: input.secondaryTypes ?? e.secondaryTypes,
           folder: input.folder ?? e.folder,
           tags: input.tags ?? e.tags,
           properties: input.properties ?? e.properties,

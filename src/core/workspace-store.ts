@@ -257,6 +257,15 @@ export class WorkspaceStore {
       const title =
         typeof data.title === 'string' && data.title.trim() ? data.title.trim() : filenameBase;
       const type = typeof data.type === 'string' && data.type.trim() ? data.type.trim() : 'page';
+      const secondaryTypes = Array.isArray(data.secondaryTypes)
+        ? Array.from(
+            new Set(
+              data.secondaryTypes
+                .map((t) => String(t).trim())
+                .filter((t) => Boolean(t) && t !== type)
+            )
+          )
+        : [];
       const tags = Array.isArray(data.tags)
         ? data.tags.map((t) => String(t).replace(/^#/, '').trim()).filter(Boolean)
         : typeof data.tags === 'string'
@@ -292,6 +301,7 @@ export class WorkspaceStore {
         title,
         slug: filenameBase,
         type,
+        secondaryTypes,
         folder: folderRel,
         relativePath,
         tags,
@@ -318,6 +328,9 @@ export class WorkspaceStore {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
     };
+    if (entry.secondaryTypes && entry.secondaryTypes.length > 0) {
+      frontmatter.secondaryTypes = entry.secondaryTypes.filter((t) => t !== entry.type);
+    }
     if (entry.coverAssetId) frontmatter.coverAssetId = entry.coverAssetId;
     if (entry.portraitAssetId) frontmatter.portraitAssetId = entry.portraitAssetId;
 
@@ -346,12 +359,14 @@ export class WorkspaceStore {
     const relativePath = path.relative(this.entriesDir(input.worldSlug), fullPath).replace(/\\/g, '/');
     const body = input.body ?? '';
 
+    const entryType = input.type || 'page';
     const entry: Entry = {
       id: crypto.randomUUID(),
       worldSlug: input.worldSlug,
       title: input.title.trim() || 'Untitled',
       slug,
-      type: input.type || 'page',
+      type: entryType,
+      secondaryTypes: (input.secondaryTypes ?? []).filter((t) => t !== entryType),
       folder,
       relativePath,
       tags: input.tags ?? [],
@@ -399,13 +414,19 @@ export class WorkspaceStore {
       nextRelativePath = nextFolder ? `${nextFolder}/${candidate}.md` : `${candidate}.md`;
     }
 
+    const nextType = input.type ?? existing.type;
+    const nextSecondaryTypes = (
+      input.secondaryTypes !== undefined ? input.secondaryTypes : existing.secondaryTypes ?? []
+    ).filter((t) => t !== nextType);
+
     const updated: Entry = {
       ...existing,
       title: nextTitle,
       slug: nextSlug,
       folder: nextFolder,
       relativePath: nextRelativePath,
-      type: input.type ?? existing.type,
+      type: nextType,
+      secondaryTypes: Array.from(new Set(nextSecondaryTypes)),
       tags: input.tags ?? existing.tags,
       properties: input.properties ?? existing.properties,
       coverAssetId:
