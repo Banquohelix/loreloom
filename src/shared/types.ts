@@ -148,6 +148,28 @@ export interface WorldMapDef {
   updatedAt: string;
 }
 
+export interface BoardItem {
+  id: string;
+  kind: 'art' | 'note' | 'swatch';
+  x: number;
+  y: number;
+  width: number;
+  assetId?: string;
+  title?: string;
+  text?: string;
+  color?: string;
+  entryId?: string;
+}
+
+export interface MoodboardDef {
+  id: string;
+  worldSlug: string;
+  title: string;
+  items: BoardItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DuplicateGroup {
   key: string;
   title: string;
@@ -346,6 +368,16 @@ export interface DesktopBridge {
     patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
   ) => Promise<WorldMapDef>;
   deleteMap: (worldSlug: string, mapId: string) => Promise<void>;
+
+  // Visual Moodboards / Reference Canvases
+  listBoards: (worldSlug: string) => Promise<MoodboardDef[]>;
+  createBoard: (worldSlug: string, title: string) => Promise<MoodboardDef>;
+  updateBoard: (
+    worldSlug: string,
+    boardId: string,
+    patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
+  ) => Promise<MoodboardDef>;
+  deleteBoard: (worldSlug: string, boardId: string) => Promise<void>;
 
   // World Hygiene (Duplicate Merger & Art Auto-Linker)
   findDuplicates: (worldSlug: string) => Promise<DuplicateGroup[]>;

@@ -375,6 +375,22 @@ function registerIpcHandlers(): void {
     await requireStore().deleteMap(worldSlug, mapId);
   });
 
+  ipcMain.handle('board:list', async (_e, worldSlug: string) => {
+    return requireStore().listBoards(worldSlug);
+  });
+
+  ipcMain.handle('board:create', async (_e, worldSlug: string, title: string) => {
+    return requireStore().createBoard(worldSlug, title);
+  });
+
+  ipcMain.handle('board:update', async (_e, worldSlug: string, boardId: string, patch) => {
+    return requireStore().updateBoard(worldSlug, boardId, patch);
+  });
+
+  ipcMain.handle('board:delete', async (_e, worldSlug: string, boardId: string) => {
+    await requireStore().deleteBoard(worldSlug, boardId);
+  });
+
   ipcMain.handle('hygiene:duplicates', async (_e, worldSlug: string) => {
     const entries = await requireStore().listAllEntriesInWorld(worldSlug);
     return findDuplicateGroups(entries);

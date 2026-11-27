@@ -114,4 +114,25 @@ describe('WorkspaceStore', () => {
     await store.deleteMap(world.slug, map.id);
     expect(await store.listMaps(world.slug)).toHaveLength(0);
   });
+
+  it('creates, updates items on, and deletes moodboards in boards.yaml', async () => {
+    const world = await store.createWorld({ name: 'Neon Ash', medium: 'video-game' });
+    const board = await store.createBoard(world.slug, 'Ashgate Visual Direction');
+    expect(board.items).toHaveLength(0);
+
+    const updated = await store.updateBoard(world.slug, board.id, {
+      items: [
+        { id: 'b-1', kind: 'swatch', x: 80, y: 120, width: 160, title: 'Neon Cyan', color: '#0284c7' },
+        { id: 'b-2', kind: 'note', x: 300, y: 120, width: 240, title: 'Lighting', text: 'Wet asphalt reflections' },
+      ],
+    });
+    expect(updated.items).toHaveLength(2);
+
+    const listed = await store.listBoards(world.slug);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].items[0].color).toBe('#0284c7');
+
+    await store.deleteBoard(world.slug, board.id);
+    expect(await store.listBoards(world.slug)).toHaveLength(0);
+  });
 });

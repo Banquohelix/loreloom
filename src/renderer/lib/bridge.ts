@@ -97,6 +97,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
 
   let artAssets: ArtAsset[] = [];
   let maps: import('@shared/types').WorldMapDef[] = [];
+  let boards: import('@shared/types').MoodboardDef[] = [];
 
   const toSummary = (e: Entry): EntrySummary => ({
     id: e.id,
@@ -320,6 +321,29 @@ function createBrowserPreviewBridge(): DesktopBridge {
     },
     deleteMap: async (_worldSlug, mapId) => {
       maps = maps.filter((m) => m.id !== mapId);
+    },
+    listBoards: async (worldSlug) => boards.filter((b) => b.worldSlug === worldSlug),
+    createBoard: async (worldSlug, title) => {
+      const now = new Date().toISOString();
+      const created = {
+        id: crypto.randomUUID(),
+        worldSlug,
+        title,
+        items: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      boards = [...boards, created];
+      return created;
+    },
+    updateBoard: async (_worldSlug, boardId, patch) => {
+      boards = boards.map((b) =>
+        b.id === boardId ? { ...b, ...patch, updatedAt: new Date().toISOString() } : b
+      );
+      return boards.find((b) => b.id === boardId)!;
+    },
+    deleteBoard: async (_worldSlug, boardId) => {
+      boards = boards.filter((b) => b.id !== boardId);
     },
     findDuplicates: async () => [],
     mergeDuplicates: async (_worldSlug, keepEntryId) =>

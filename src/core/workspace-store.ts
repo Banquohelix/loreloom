@@ -12,6 +12,7 @@ import type {
   CreateWorldInput,
   Entry,
   EntryPropertyValue,
+  MoodboardDef,
   UpdateEntryInput,
   WorkspaceConfig,
   WorkspaceState,
@@ -66,6 +67,10 @@ interface MapsManifestFile {
   maps: WorldMapDef[];
 }
 
+interface BoardsManifestFile {
+  boards: MoodboardDef[];
+}
+
 /**
  * Deep module managing the on-disk OneDrive/Google Drive Workspace folder.
  * Hides YAML/Markdown serialization, atomic writes, slug collision handling,
@@ -104,6 +109,10 @@ export class WorkspaceStore {
 
   private mapsManifestPath(worldSlug: string): string {
     return path.join(this.worldDir(worldSlug), 'maps.yaml');
+  }
+
+  private boardsManifestPath(worldSlug: string): string {
+    return path.join(this.worldDir(worldSlug), 'boards.yaml');
   }
 
   async ensureInitialized(defaultName = 'Loreloom Workspace'): Promise<WorkspaceState> {
@@ -673,6 +682,70 @@ export class WorkspaceStore {
     await atomicWriteFile(
       this.mapsManifestPath(worldSlug),
       yaml.dump({ maps: remaining } satisfies MapsManifestFile)
+    );
+  }
+
+  async listBoards(worldSlug: string): Promise<MoodboardDef[]> {
+    const manifestPath = this.boardsManifestPath(worldSlug);
+    if (!(await exists(manifestPath))) return [];
+    try {
+      const raw = await fs.readFile(manifestPath, 'utf8');
+      const parsed = yaml.load(raw) as BoardsManifestFile | undefined;
+      if (parsed && Array.isArray(parsed.boards)) {
+        return parsed.boards;
+      }
+    } catch {
+      // Ignore malformed boards.yaml
+    }
+    return [];
+  }
+
+  async createBoard(worldSlug: string, title: string): Promise<MoodboardDef> {
+    const boards = await this.listBoards(worldSlug);
+    const now = new Date().toISOString();
+    const created: MoodboardDef = {
+      id: crypto.randomUUID(),
+      worldSlug,
+      title: title.trim() || 'Untitled Moodboard',
+      items: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const next = [...boards, created];
+    await atomicWriteFile(
+      this.boardsManifestPath(worldSlug),
+      yaml.dump({ boards: next } satisfies BoardsManifestFile)
+    );
+    return created;
+  }
+
+  async updateBoard(
+    worldSlug: string,
+    boardId: string,
+    patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
+  ): Promise<MoodboardDef> {
+    const boards = await this.listBoards(worldSlug);
+    const idx = boards.findIndex((b) => b.id === boardId);
+    if (idx === -1) throw new Error(`Moodboard not found: ${boardId}`);
+    const updated: MoodboardDef = {
+      ...boards[idx],
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    boards[idx] = updated;
+    await atomicWriteFile(
+      this.boardsManifestPath(worldSlug),
+      yaml.dump({ boards } satisfies BoardsManifestFile)
+    );
+    return updated;
+  }
+
+  async deleteBoard(worldSlug: string, boardId: string): Promise<void> {
+    const boards = await this.listBoards(worldSlug);
+    const remaining = boards.filter((b) => b.id !== boardId);
+    await atomicWriteFile(
+      this.boardsManifestPath(worldSlug),
+      yaml.dump({ boards: remaining } satisfies BoardsManifestFile)
     );
   }
 }

@@ -7,6 +7,7 @@ import {
   FolderInput,
   FolderSync,
   Image as ImageIcon,
+  LayoutDashboard,
   LayoutGrid,
   Map as MapIcon,
   Moon,
@@ -26,6 +27,7 @@ export type ActiveView =
   | { kind: 'art' }
   | { kind: 'graph' }
   | { kind: 'maps' }
+  | { kind: 'moodboards' }
   | { kind: 'collection'; typeId: string }
   | { kind: 'entry'; entryId: string };
 
@@ -252,6 +254,17 @@ export function Sidebar({
             >
               <MapIcon className="w-4 h-4" />
               Maps
+            </button>
+            <button
+              onClick={() => onSelectView({ kind: 'moodboards' })}
+              className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition cursor-pointer ${
+                activeView.kind === 'moodboards'
+                  ? 'bg-black/8 dark:bg-white/10 font-medium'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5'
+              }`}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              Moodboards
             </button>
           </div>
 

@@ -49,6 +49,12 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke('map:update', worldSlug, mapId, patch),
   deleteMap: (worldSlug, mapId) => ipcRenderer.invoke('map:delete', worldSlug, mapId),
 
+  listBoards: (worldSlug) => ipcRenderer.invoke('board:list', worldSlug),
+  createBoard: (worldSlug, title) => ipcRenderer.invoke('board:create', worldSlug, title),
+  updateBoard: (worldSlug, boardId, patch) =>
+    ipcRenderer.invoke('board:update', worldSlug, boardId, patch),
+  deleteBoard: (worldSlug, boardId) => ipcRenderer.invoke('board:delete', worldSlug, boardId),
+
   findDuplicates: (worldSlug) => ipcRenderer.invoke('hygiene:duplicates', worldSlug),
   mergeDuplicates: (worldSlug, keepEntryId, removeEntryIds) =>
     ipcRenderer.invoke('hygiene:merge', worldSlug, keepEntryId, removeEntryIds),
