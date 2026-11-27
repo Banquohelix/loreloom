@@ -23,6 +23,7 @@ import { EntryEditor } from './components/EntryEditor';
 import { EntryInspector } from './components/EntryInspector';
 import { CollectionView } from './components/CollectionView';
 import { ArtGalleryView } from './components/ArtGalleryView';
+import { WorldGraphView } from './components/WorldGraphView';
 import { WorldThemeDrawer } from './components/WorldThemeDrawer';
 import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
@@ -234,6 +235,19 @@ export default function App() {
     setActiveView({ kind: 'entry', entryId: created.id });
   };
 
+  const handleCreateStubEntry = async (title: string) => {
+    if (!activeWorld) return;
+    const created = await bridge.createEntry({
+      worldSlug: activeWorld.slug,
+      title,
+      type: 'page',
+      folder: 'lore',
+      body: `# ${title}\n\n`,
+    });
+    await refreshWorldData(activeWorld.slug);
+    setActiveView({ kind: 'entry', entryId: created.id });
+  };
+
   const handleUpdateCurrentEntry = async (
     patch: Parameters<typeof bridge.updateEntry>[0] extends infer P
       ? Omit<P, 'worldSlug' | 'id'>
@@ -388,6 +402,11 @@ export default function App() {
             onRefreshArt={() => refreshWorldData(activeWorld.slug)}
             onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           />
+        ) : activeView.kind === 'graph' ? (
+          <WorldGraphView
+            world={activeWorld}
+            onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+          />
         ) : activeView.kind === 'collection' && activeCollectionType ? (
           <CollectionView
             world={activeWorld}
@@ -408,11 +427,13 @@ export default function App() {
               onToggleInspector={() => setInspectorOpen((v) => !v)}
               onSaveEntry={handleUpdateCurrentEntry}
               onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+              onCreateStubEntry={handleCreateStubEntry}
             />
             {inspectorOpen && (
               <EntryInspector
                 world={activeWorld}
                 entry={currentEntry}
+                allEntries={entries}
                 backlinks={backlinks}
                 onChangeType={(type) => handleUpdateCurrentEntry({ type })}
                 onChangeSecondaryTypes={(secondaryTypes) =>
@@ -421,6 +442,7 @@ export default function App() {
                 onChangeFolder={(folder) => handleUpdateCurrentEntry({ folder })}
                 onUpdateProperties={(properties) => handleUpdateCurrentEntry({ properties })}
                 onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+                onCreateStubEntry={handleCreateStubEntry}
                 onDeleteEntry={handleDeleteCurrentEntry}
               />
             )}

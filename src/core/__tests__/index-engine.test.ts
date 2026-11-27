@@ -75,4 +75,28 @@ describe('IndexEngine', () => {
     expect(vehicles.map((e) => e.id)).toContain(skiff.id);
     expect(items.map((e) => e.id)).toContain(skiff.id);
   });
+
+  it('builds a deduplicated WorldGraph with nodes, edges, and connection counts', async () => {
+    const world = await store.createWorld({ name: 'Brimstone', medium: 'ttrpg' });
+    const bellamare = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Bellamare',
+      type: 'location',
+      body: 'Port city connected to [[Deepfire]].',
+    });
+    const deepfire = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Deepfire',
+      type: 'resource',
+      body: 'Harvested beneath [[Bellamare]] and [[Missing Place]].',
+    });
+
+    await index.rebuildWorkspace(store);
+
+    const graph = index.getWorldGraph(world.slug);
+    expect(graph.nodes).toHaveLength(2);
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.nodes.find((n) => n.id === bellamare.id)?.connectionCount).toBe(1);
+    expect(graph.nodes.find((n) => n.id === deepfire.id)?.connectionCount).toBe(1);
+  });
 });

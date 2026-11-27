@@ -78,6 +78,7 @@ interface EntryEditorProps {
     portraitAssetId?: string | null;
   }) => Promise<void>;
   onNavigateEntry: (entryId: string) => void;
+  onCreateStubEntry: (title: string) => Promise<void>;
 }
 
 export function EntryEditor({
@@ -88,6 +89,8 @@ export function EntryEditor({
   inspectorOpen,
   onToggleInspector,
   onSaveEntry,
+  onNavigateEntry,
+  onCreateStubEntry,
 }: EntryEditorProps) {
   const bridge = getBridge();
   const [title, setTitle] = useState(entry.title);
@@ -122,6 +125,33 @@ export function EntryEditor({
       TaskItem.configure({ nested: true }),
       ImageExtension.configure({ inline: false }),
     ],
+    editorProps: {
+      handleClick: (view, pos, event) => {
+        if (!event.ctrlKey && !event.metaKey) return false;
+        const $pos = view.state.doc.resolve(pos);
+        const parentText = $pos.parent.textContent;
+        const offset = $pos.parentOffset;
+        const regex = /(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(parentText)) !== null) {
+          if (offset >= m.index && offset <= m.index + m[0].length) {
+            const target = m[1].trim();
+            const found = allEntries.find(
+              (e) =>
+                e.title.toLowerCase() === target.toLowerCase() ||
+                e.slug.toLowerCase() === target.toLowerCase()
+            );
+            if (found) {
+              onNavigateEntry(found.id);
+            } else {
+              onCreateStubEntry(target);
+            }
+            return true;
+          }
+        }
+        return false;
+      },
+    },
     content: markdownToHtml(entry.body, world.slug),
     onUpdate: ({ editor: ed }) => {
       const textBefore = ed.state.doc.textBetween(

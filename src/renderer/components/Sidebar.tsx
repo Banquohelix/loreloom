@@ -9,6 +9,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   Moon,
+  Network,
   Palette,
   Plus,
   Search,
@@ -21,6 +22,7 @@ import { EntityIcon } from './IconBadge';
 export type ActiveView =
   | { kind: 'overview' }
   | { kind: 'art' }
+  | { kind: 'graph' }
   | { kind: 'collection'; typeId: string }
   | { kind: 'entry'; entryId: string };
 
@@ -223,6 +225,17 @@ export function Sidebar({
                 Concept Art
               </span>
               <span className="text-xs text-[var(--studio-muted)]">{artCount}</span>
+            </button>
+            <button
+              onClick={() => onSelectView({ kind: 'graph' })}
+              className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition cursor-pointer ${
+                activeView.kind === 'graph'
+                  ? 'bg-black/8 dark:bg-white/10 font-medium'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5'
+              }`}
+            >
+              <Network className="w-4 h-4" />
+              Lore Graph
             </button>
           </div>
 

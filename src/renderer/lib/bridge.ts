@@ -231,6 +231,18 @@ function createBrowserPreviewBridge(): DesktopBridge {
           context: e.excerpt,
         }));
     },
+    getWorldGraph: async (worldSlug) => {
+      const worldEntries = entries.filter((e) => e.worldSlug === worldSlug);
+      return {
+        nodes: worldEntries.map((e) => ({
+          id: e.id,
+          title: e.title,
+          type: e.type,
+          connectionCount: 0,
+        })),
+        edges: [],
+      };
+    },
     searchGlobal: async (query): Promise<SearchHit[]> =>
       entries
         .filter(

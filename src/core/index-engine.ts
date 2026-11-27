@@ -6,8 +6,11 @@ import type {
   CollectionQuery,
   Entry,
   EntrySummary,
+  GraphEdge,
+  GraphNode,
   SearchHit,
   WorldConfig,
+  WorldGraph,
 } from '../shared/types';
 import type { WorkspaceStore } from './workspace-store';
 
@@ -273,6 +276,49 @@ export class IndexEngine {
       ) as unknown as BacklinkRef[];
 
     return rows;
+  }
+
+  getWorldGraph(worldSlug: string): WorldGraph {
+    const entryRows = this.db
+      .prepare('SELECT id, title, slug, type FROM entries WHERE world_slug = ?')
+      .all(worldSlug) as Array<{ id: string; title: string; slug: string; type: string }>;
+
+    const idByKey = new Map<string, string>();
+    for (const row of entryRows) {
+      idByKey.set(row.title.toLowerCase(), row.id);
+      idByKey.set(row.slug.toLowerCase(), row.id);
+    }
+
+    const linkRows = this.db
+      .prepare('SELECT source_id, target_key FROM links WHERE world_slug = ?')
+      .all(worldSlug) as Array<{ source_id: string; target_key: string }>;
+
+    const edgeSet = new Set<string>();
+    const edges: GraphEdge[] = [];
+    const degree = new Map<string, number>();
+
+    for (const link of linkRows) {
+      const targetId = idByKey.get(link.target_key);
+      if (!targetId || targetId === link.source_id) continue;
+      const pairKey =
+        link.source_id < targetId
+          ? `${link.source_id}::${targetId}`
+          : `${targetId}::${link.source_id}`;
+      if (edgeSet.has(pairKey)) continue;
+      edgeSet.add(pairKey);
+      edges.push({ sourceId: link.source_id, targetId });
+      degree.set(link.source_id, (degree.get(link.source_id) ?? 0) + 1);
+      degree.set(targetId, (degree.get(targetId) ?? 0) + 1);
+    }
+
+    const nodes: GraphNode[] = entryRows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      type: row.type,
+      connectionCount: degree.get(row.id) ?? 0,
+    }));
+
+    return { nodes, edges };
   }
 
   getEntriesLinkingAsset(worldSlug: string, assetId: string, assetFilename: string): EntrySummary[] {

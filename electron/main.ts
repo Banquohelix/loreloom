@@ -294,6 +294,10 @@ function registerIpcHandlers(): void {
     return requireIndex().getBacklinks(worldSlug, entryId);
   });
 
+  ipcMain.handle('world:graph', async (_e, worldSlug: string) => {
+    return requireIndex().getWorldGraph(worldSlug);
+  });
+
   ipcMain.handle('search:global', async (_e, query: string) => {
     return requireIndex().searchGlobal(query);
   });

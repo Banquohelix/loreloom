@@ -1,36 +1,58 @@
-import { ArrowUpRight, Trash2 } from 'lucide-react';
+import { useMemo } from 'react';
+import { ArrowUpRight, Link2, Plus, Trash2 } from 'lucide-react';
 import type {
   BacklinkRef,
   Entry,
   EntryPropertyValue,
+  EntrySummary,
   WorldConfig,
 } from '@shared/types';
 
 interface EntryInspectorProps {
   world: WorldConfig;
   entry: Entry;
+  allEntries: EntrySummary[];
   backlinks: BacklinkRef[];
   onChangeType: (typeId: string) => Promise<void>;
   onChangeSecondaryTypes: (secondaryTypes: string[]) => Promise<void>;
   onChangeFolder: (folder: string) => Promise<void>;
   onUpdateProperties: (properties: Record<string, EntryPropertyValue>) => Promise<void>;
   onNavigateEntry: (entryId: string) => void;
+  onCreateStubEntry: (title: string) => Promise<void>;
   onDeleteEntry: () => Promise<void>;
 }
 
 export function EntryInspector({
   world,
   entry,
+  allEntries,
   backlinks,
   onChangeType,
   onChangeSecondaryTypes,
   onChangeFolder,
   onUpdateProperties,
   onNavigateEntry,
+  onCreateStubEntry,
   onDeleteEntry,
 }: EntryInspectorProps) {
   const activeType = world.entityTypes.find((t) => t.id === entry.type) ?? world.entityTypes[0];
   const secondaryTypes = entry.secondaryTypes ?? [];
+
+  const outgoingLinks = useMemo(() => {
+    const found = new Map<string, { target: string; matched?: EntrySummary }>();
+    const regex = /(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(entry.body || '')) !== null) {
+      const target = m[1].trim();
+      const key = target.toLowerCase();
+      if (!target || found.has(key)) continue;
+      const matched = allEntries.find(
+        (e) => e.title.toLowerCase() === key || e.slug.toLowerCase() === key
+      );
+      found.set(key, { target, matched });
+    }
+    return Array.from(found.values());
+  }, [entry.body, allEntries]);
 
   const toggleSecondaryType = (typeId: string) => {
     if (typeId === entry.type) return;
@@ -169,6 +191,40 @@ export function EntryInspector({
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Outgoing [[Wikilinks]] */}
+      {outgoingLinks.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--studio-muted)] flex items-center gap-1">
+            <Link2 className="w-3 h-3" /> Links in Page ({outgoingLinks.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {outgoingLinks.map((link) =>
+              link.matched ? (
+                <button
+                  key={link.target}
+                  onClick={() => onNavigateEntry(link.matched!.id)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] hover:border-amber-500/60 text-[11px] font-medium cursor-pointer"
+                  title="Jump to entry (or Ctrl+Click [[link]] in editor)"
+                >
+                  <span className="truncate max-w-[160px]">{link.matched.title}</span>
+                  <ArrowUpRight className="w-3 h-3 text-[var(--studio-muted)]" />
+                </button>
+              ) : (
+                <button
+                  key={link.target}
+                  onClick={() => onCreateStubEntry(link.target)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-dashed border-amber-500/50 bg-amber-500/8 text-amber-700 dark:text-amber-300 text-[11px] font-medium hover:bg-amber-500/15 cursor-pointer"
+                  title="Entry doesn't exist yet — click to create stub"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span className="truncate max-w-[150px]">{link.target}</span>
+                </button>
+              )
+            )}
+          </div>
         </div>
       )}
 

@@ -23,6 +23,7 @@ const bridge: DesktopBridge = {
   updateEntry: (input) => ipcRenderer.invoke('entry:update', input),
   deleteEntry: (worldSlug, id) => ipcRenderer.invoke('entry:delete', worldSlug, id),
   getBacklinks: (worldSlug, entryId) => ipcRenderer.invoke('entry:backlinks', worldSlug, entryId),
+  getWorldGraph: (worldSlug) => ipcRenderer.invoke('world:graph', worldSlug),
   searchGlobal: (query) => ipcRenderer.invoke('search:global', query),
 
   listArtAssets: (query) => ipcRenderer.invoke('art:list', query),

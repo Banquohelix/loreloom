@@ -111,6 +111,23 @@ export interface BacklinkRef {
   context: string;
 }
 
+export interface GraphNode {
+  id: string;
+  title: string;
+  type: string;
+  connectionCount: number;
+}
+
+export interface GraphEdge {
+  sourceId: string;
+  targetId: string;
+}
+
+export interface WorldGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface SearchHit {
   entryId: string;
   worldSlug: string;
@@ -270,6 +287,7 @@ export interface DesktopBridge {
   updateEntry: (input: UpdateEntryInput) => Promise<Entry>;
   deleteEntry: (worldSlug: string, id: string) => Promise<void>;
   getBacklinks: (worldSlug: string, entryId: string) => Promise<BacklinkRef[]>;
+  getWorldGraph: (worldSlug: string) => Promise<WorldGraph>;
   searchGlobal: (query: string) => Promise<SearchHit[]>;
 
   // Concept Art
