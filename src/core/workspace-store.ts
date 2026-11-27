@@ -16,6 +16,7 @@ import type {
   WorkspaceConfig,
   WorkspaceState,
   WorldConfig,
+  WorldMapDef,
 } from '../shared/types';
 
 export function slugify(input: string): string {
@@ -61,6 +62,10 @@ interface ArtManifestFile {
   assets: ArtAsset[];
 }
 
+interface MapsManifestFile {
+  maps: WorldMapDef[];
+}
+
 /**
  * Deep module managing the on-disk OneDrive/Google Drive Workspace folder.
  * Hides YAML/Markdown serialization, atomic writes, slug collision handling,
@@ -95,6 +100,10 @@ export class WorkspaceStore {
 
   private artManifestPath(worldSlug: string): string {
     return path.join(this.worldDir(worldSlug), 'art-manifest.yaml');
+  }
+
+  private mapsManifestPath(worldSlug: string): string {
+    return path.join(this.worldDir(worldSlug), 'maps.yaml');
   }
 
   async ensureInitialized(defaultName = 'Loreloom Workspace'): Promise<WorkspaceState> {
@@ -606,5 +615,64 @@ export class WorkspaceStore {
       throw new Error('Invalid asset path');
     }
     return resolved;
+  }
+
+  async listMaps(worldSlug: string): Promise<WorldMapDef[]> {
+    const manifestPath = this.mapsManifestPath(worldSlug);
+    if (!(await exists(manifestPath))) return [];
+    try {
+      const raw = await fs.readFile(manifestPath, 'utf8');
+      const parsed = yaml.load(raw) as MapsManifestFile | undefined;
+      if (parsed && Array.isArray(parsed.maps)) {
+        return parsed.maps;
+      }
+    } catch {
+      // Ignore malformed maps.yaml
+    }
+    return [];
+  }
+
+  async createMap(worldSlug: string, title: string, assetId: string): Promise<WorldMapDef> {
+    const maps = await this.listMaps(worldSlug);
+    const now = new Date().toISOString();
+    const created: WorldMapDef = {
+      id: crypto.randomUUID(),
+      worldSlug,
+      title: title.trim() || 'Untitled Map',
+      assetId,
+      pins: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const next = [...maps, created];
+    await atomicWriteFile(this.mapsManifestPath(worldSlug), yaml.dump({ maps: next } satisfies MapsManifestFile));
+    return created;
+  }
+
+  async updateMap(
+    worldSlug: string,
+    mapId: string,
+    patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
+  ): Promise<WorldMapDef> {
+    const maps = await this.listMaps(worldSlug);
+    const idx = maps.findIndex((m) => m.id === mapId);
+    if (idx === -1) throw new Error(`Map not found: ${mapId}`);
+    const updated: WorldMapDef = {
+      ...maps[idx],
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    maps[idx] = updated;
+    await atomicWriteFile(this.mapsManifestPath(worldSlug), yaml.dump({ maps } satisfies MapsManifestFile));
+    return updated;
+  }
+
+  async deleteMap(worldSlug: string, mapId: string): Promise<void> {
+    const maps = await this.listMaps(worldSlug);
+    const remaining = maps.filter((m) => m.id !== mapId);
+    await atomicWriteFile(
+      this.mapsManifestPath(worldSlug),
+      yaml.dump({ maps: remaining } satisfies MapsManifestFile)
+    );
   }
 }

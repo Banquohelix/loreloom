@@ -128,6 +128,26 @@ export interface WorldGraph {
   edges: GraphEdge[];
 }
 
+export interface MapPin {
+  id: string;
+  x: number; // 0..100 percentage of image width
+  y: number; // 0..100 percentage of image height
+  label: string;
+  entryId?: string;
+  color: string;
+  note?: string;
+}
+
+export interface WorldMapDef {
+  id: string;
+  worldSlug: string;
+  title: string;
+  assetId: string;
+  pins: MapPin[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SearchHit {
   entryId: string;
   worldSlug: string;
@@ -298,6 +318,16 @@ export interface DesktopBridge {
   deleteArtAsset: (worldSlug: string, assetId: string) => Promise<void>;
   getArtLinkedEntries: (worldSlug: string, assetId: string) => Promise<EntrySummary[]>;
   getAssetUrl: (worldSlug: string, relativePath: string) => string;
+
+  // Interactive Pin Maps
+  listMaps: (worldSlug: string) => Promise<WorldMapDef[]>;
+  createMap: (worldSlug: string, title: string, assetId: string) => Promise<WorldMapDef>;
+  updateMap: (
+    worldSlug: string,
+    mapId: string,
+    patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
+  ) => Promise<WorldMapDef>;
+  deleteMap: (worldSlug: string, mapId: string) => Promise<void>;
 
   // Obsidian Vault Importer
   scanObsidianVault: (vaultPath: string) => Promise<VaultScanPreview>;

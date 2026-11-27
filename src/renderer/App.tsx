@@ -24,6 +24,7 @@ import { EntryInspector } from './components/EntryInspector';
 import { CollectionView } from './components/CollectionView';
 import { ArtGalleryView } from './components/ArtGalleryView';
 import { WorldGraphView } from './components/WorldGraphView';
+import { MapsView } from './components/MapsView';
 import { WorldThemeDrawer } from './components/WorldThemeDrawer';
 import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
@@ -406,6 +407,14 @@ export default function App() {
           <WorldGraphView
             world={activeWorld}
             onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+          />
+        ) : activeView.kind === 'maps' ? (
+          <MapsView
+            world={activeWorld}
+            entries={entries}
+            artAssets={artAssets}
+            onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+            onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           />
         ) : activeView.kind === 'collection' && activeCollectionType ? (
           <CollectionView

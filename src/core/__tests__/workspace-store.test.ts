@@ -90,4 +90,28 @@ describe('WorkspaceStore', () => {
     expect(listed).toHaveLength(2);
     expect(listed.some((a) => a.filename === 'dropped-concept.png')).toBe(true);
   });
+
+  it('creates, updates pins on, and deletes interactive maps in maps.yaml', async () => {
+    const world = await store.createWorld({ name: 'Brimstone', medium: 'ttrpg' });
+    const fakePng = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const art = await store.saveArtAssetFromBuffer(world.slug, 'world-map.png', fakePng, 'map');
+
+    const map = await store.createMap(world.slug, 'Brimstone Continent', art.id);
+    expect(map.pins).toHaveLength(0);
+
+    const updated = await store.updateMap(world.slug, map.id, {
+      pins: [
+        { id: 'p-1', x: 42.5, y: 61.2, label: 'Bellamare', color: '#059669', note: 'Coastal port' },
+      ],
+    });
+    expect(updated.pins).toHaveLength(1);
+    expect(updated.pins[0].label).toBe('Bellamare');
+
+    const listed = await store.listMaps(world.slug);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].pins[0].x).toBe(42.5);
+
+    await store.deleteMap(world.slug, map.id);
+    expect(await store.listMaps(world.slug)).toHaveLength(0);
+  });
 });

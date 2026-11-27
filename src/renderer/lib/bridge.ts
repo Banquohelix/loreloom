@@ -96,6 +96,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
   ];
 
   let artAssets: ArtAsset[] = [];
+  let maps: import('@shared/types').WorldMapDef[] = [];
 
   const toSummary = (e: Entry): EntrySummary => ({
     id: e.id,
@@ -296,6 +297,30 @@ function createBrowserPreviewBridge(): DesktopBridge {
         )
         .map(toSummary),
     getAssetUrl: (_worldSlug, relativePath) => relativePath,
+    listMaps: async (worldSlug) => maps.filter((m) => m.worldSlug === worldSlug),
+    createMap: async (worldSlug, title, assetId) => {
+      const now = new Date().toISOString();
+      const created = {
+        id: crypto.randomUUID(),
+        worldSlug,
+        title,
+        assetId,
+        pins: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      maps = [...maps, created];
+      return created;
+    },
+    updateMap: async (_worldSlug, mapId, patch) => {
+      maps = maps.map((m) =>
+        m.id === mapId ? { ...m, ...patch, updatedAt: new Date().toISOString() } : m
+      );
+      return maps.find((m) => m.id === mapId)!;
+    },
+    deleteMap: async (_worldSlug, mapId) => {
+      maps = maps.filter((m) => m.id !== mapId);
+    },
     scanObsidianVault: async (vaultPath): Promise<VaultScanPreview> => ({
       vaultPath,
       vaultName: 'Sample Vault',

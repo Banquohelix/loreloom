@@ -42,6 +42,13 @@ const bridge: DesktopBridge = {
       .map(encodeURIComponent)
       .join('/')}`,
 
+  listMaps: (worldSlug) => ipcRenderer.invoke('map:list', worldSlug),
+  createMap: (worldSlug, title, assetId) =>
+    ipcRenderer.invoke('map:create', worldSlug, title, assetId),
+  updateMap: (worldSlug, mapId, patch) =>
+    ipcRenderer.invoke('map:update', worldSlug, mapId, patch),
+  deleteMap: (worldSlug, mapId) => ipcRenderer.invoke('map:delete', worldSlug, mapId),
+
   scanObsidianVault: (vaultPath) => ipcRenderer.invoke('obsidian:scan', vaultPath),
   importObsidianVault: (options) => ipcRenderer.invoke('obsidian:import', options),
 

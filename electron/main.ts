@@ -354,6 +354,22 @@ function registerIpcHandlers(): void {
     return requireIndex().getEntriesLinkingAsset(worldSlug, assetId, asset.filename);
   });
 
+  ipcMain.handle('map:list', async (_e, worldSlug: string) => {
+    return requireStore().listMaps(worldSlug);
+  });
+
+  ipcMain.handle('map:create', async (_e, worldSlug: string, title: string, assetId: string) => {
+    return requireStore().createMap(worldSlug, title, assetId);
+  });
+
+  ipcMain.handle('map:update', async (_e, worldSlug: string, mapId: string, patch) => {
+    return requireStore().updateMap(worldSlug, mapId, patch);
+  });
+
+  ipcMain.handle('map:delete', async (_e, worldSlug: string, mapId: string) => {
+    await requireStore().deleteMap(worldSlug, mapId);
+  });
+
   ipcMain.handle('obsidian:scan', async (_e, vaultPath: string) => {
     return importer.scanVault(vaultPath);
   });

@@ -8,6 +8,7 @@ import {
   FolderSync,
   Image as ImageIcon,
   LayoutGrid,
+  Map as MapIcon,
   Moon,
   Network,
   Palette,
@@ -23,6 +24,7 @@ export type ActiveView =
   | { kind: 'overview' }
   | { kind: 'art' }
   | { kind: 'graph' }
+  | { kind: 'maps' }
   | { kind: 'collection'; typeId: string }
   | { kind: 'entry'; entryId: string };
 
@@ -236,6 +238,17 @@ export function Sidebar({
             >
               <Network className="w-4 h-4" />
               Lore Graph
+            </button>
+            <button
+              onClick={() => onSelectView({ kind: 'maps' })}
+              className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition cursor-pointer ${
+                activeView.kind === 'maps'
+                  ? 'bg-black/8 dark:bg-white/10 font-medium'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5'
+              }`}
+            >
+              <MapIcon className="w-4 h-4" />
+              Maps
             </button>
           </div>
 
