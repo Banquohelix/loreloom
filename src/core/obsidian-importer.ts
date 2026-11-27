@@ -3,12 +3,14 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import type {
   ArtCategory,
+  EntityTypeDef,
   EntryPropertyValue,
   ImportReport,
   VaultScanPreview,
   WorldMedium,
   WorldThemePresetId,
 } from '../shared/types';
+import { normalizeFrontmatterType } from '../shared/type-normalizer';
 import type { WorkspaceStore } from './workspace-store';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif']);
@@ -60,13 +62,17 @@ async function walkVault(vaultPath: string): Promise<{ notes: ScannedFile[]; ima
   return { notes, images, folders };
 }
 
-function inferEntityTypeFromFolder(folder: string, frontmatterType?: unknown): string {
-  if (typeof frontmatterType === 'string' && frontmatterType.trim()) {
-    return frontmatterType.trim().toLowerCase();
-  }
+function inferEntityTypeFromFolder(
+  folder: string,
+  frontmatterType?: unknown,
+  entityTypes?: EntityTypeDef[]
+): string {
+  const normalized = normalizeFrontmatterType(frontmatterType, entityTypes);
+  if (normalized) return normalized;
+
   const lower = folder.toLowerCase();
-  if (lower.includes('character') || lower.includes('npc') || lower.includes('cast')) return 'character';
-  if (lower.includes('location') || lower.includes('place') || lower.includes('region') || lower.includes('city')) return 'location';
+  if (lower.includes('character') || lower.includes('npc') || lower.includes('cast') || lower.includes('people')) return 'character';
+  if (lower.includes('location') || lower.includes('place') || lower.includes('region') || lower.includes('city') || lower.includes('countr') || lower.includes('nation') || lower.includes('realm')) return 'location';
   if (lower.includes('faction') || lower.includes('guild') || lower.includes('house') || lower.includes('org')) return 'faction';
   if (lower.includes('item') || lower.includes('artifact') || lower.includes('weapon') || lower.includes('relic')) return 'item';
   if (lower.includes('timeline') || lower.includes('event') || lower.includes('history')) return 'event';
@@ -141,6 +147,7 @@ export class ObsidianImporter {
 
     let worldSlug = options.targetWorldSlug;
     let worldName = options.newWorldName || path.basename(options.vaultPath);
+    let worldEntityTypes: EntityTypeDef[] | undefined;
 
     if (!worldSlug) {
       const created = await store.createWorld({
@@ -151,10 +158,12 @@ export class ObsidianImporter {
       });
       worldSlug = created.slug;
       worldName = created.name;
+      worldEntityTypes = created.entityTypes;
     } else {
       const existing = (await store.listWorlds()).find((w) => w.slug === worldSlug);
       if (!existing) throw new Error(`Target world not found: ${worldSlug}`);
       worldName = existing.name;
+      worldEntityTypes = existing.entityTypes;
     }
 
     // 1. Copy all vault images into world assets/ and build lookup map
@@ -257,7 +266,7 @@ export class ObsidianImporter {
           }
         }
 
-        const inferredType = inferEntityTypeFromFolder(note.folder, data.type);
+        const inferredType = inferEntityTypeFromFolder(note.folder, data.type, worldEntityTypes);
 
         await store.createEntry({
           worldSlug,

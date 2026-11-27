@@ -11,6 +11,7 @@ import {
   type ReclassifyTriageReport,
   type WorldConfig,
 } from '../shared/types';
+import { normalizeFrontmatterType } from '../shared/type-normalizer';
 import type { WorkspaceStore } from './workspace-store';
 
 export { NEEDS_TRIAGE_TAG };
@@ -157,13 +158,11 @@ export function classifyTextNote(
   let matchedTypeId: string | null = null;
   let confidence: 'high' | 'medium' | 'low' = 'low';
 
-  // 1. Explicit frontmatter `type`
-  if (typeof fm.type === 'string' && fm.type.trim()) {
-    const candidate = fm.type.trim().toLowerCase();
-    if (availableTypeIds.has(candidate)) {
-      matchedTypeId = candidate;
-      confidence = 'high';
-    }
+  // 1. Explicit frontmatter `type` (including synonyms like `place` -> `location`, `people` -> `character`)
+  const normalizedFmType = normalizeFrontmatterType(fm.type, entityTypes);
+  if (normalizedFmType) {
+    matchedTypeId = normalizedFmType;
+    confidence = 'high';
   }
 
   // 2. Match custom or starter EntityType names/plurals in folder path or filename

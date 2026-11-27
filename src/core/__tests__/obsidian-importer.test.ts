@@ -43,7 +43,10 @@ Lyra studies forbidden relics at [[Sunspire Library]] and hunts [[Missing Note]]
 
     await fs.writeFile(
       path.join(tmpVault, 'Locations', 'Sunspire Library.md'),
-      `# Sunspire Library
+      `---
+type: place
+---
+# Sunspire Library
 A towering archive of glass and bronze.
 `
     );
@@ -80,6 +83,10 @@ A towering archive of glass and bronze.
     expect(lyra?.properties.role).toBe('Archivist');
     expect(lyra?.body).toContain('![Lyra Portrait](assets/lyra-concept.png)');
     expect(lyra?.portraitAssetId).toBeDefined();
+
+    // Ensure Obsidian frontmatter `type: place` normalizes to Loreloom's `location`
+    const sunspire = entries.find((e) => e.title === 'Sunspire Library');
+    expect(sunspire?.type).toBe('location');
 
     // Ensure original vault is untouched
     const originalStillExists = await fs.readFile(
