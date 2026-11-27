@@ -20,16 +20,10 @@ import {
   Sun,
 } from 'lucide-react';
 import type { EntrySummary, StudioAppearance, WorldConfig } from '@shared/types';
+import type { ActiveView } from '@shared/tab-utils';
 import { EntityIcon } from './IconBadge';
 
-export type ActiveView =
-  | { kind: 'overview' }
-  | { kind: 'art' }
-  | { kind: 'graph' }
-  | { kind: 'maps' }
-  | { kind: 'moodboards' }
-  | { kind: 'collection'; typeId: string }
-  | { kind: 'entry'; entryId: string };
+export type { ActiveView };
 
 interface SidebarProps {
   worlds: WorldConfig[];

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Sparkles } from 'lucide-react';
+import { ArrowLeftRight, Sparkles, X } from 'lucide-react';
 import {
   NEEDS_TRIAGE_TAG,
   type ArtAsset,
@@ -14,10 +14,16 @@ import {
   type WorldTheme,
   type WorkspaceState,
 } from '@shared/types';
+import {
+  closeTabById,
+  openViewInTabs,
+  type WorkspaceTab,
+} from '@shared/tab-utils';
 import { resolveWorldTokens } from '@core/theme-engine';
 import { getBridge } from './lib/bridge';
 import { SetupWorkspaceView } from './components/SetupWorkspaceView';
 import { Sidebar, type ActiveView } from './components/Sidebar';
+import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { WorldOverview } from './components/WorldOverview';
 import { EntryEditor } from './components/EntryEditor';
 import { EntryInspector } from './components/EntryInspector';
@@ -40,7 +46,29 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [activeWorldSlug, setActiveWorldSlug] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<ActiveView>({ kind: 'overview' });
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([
+    { id: 'tab-initial', view: { kind: 'overview' } },
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>('tab-initial');
+  const [splitView, setSplitView] = useState<ActiveView | null>(null);
+  const [splitEntry, setSplitEntry] = useState<Entry | null>(null);
+
+  const activeView: ActiveView = useMemo(
+    () => tabs.find((t) => t.id === activeTabId)?.view ?? { kind: 'overview' },
+    [tabs, activeTabId]
+  );
+
+  const setActiveView = useCallback(
+    (view: ActiveView, openInNewTab = false) => {
+      setTabs((prevTabs) => {
+        const res = openViewInTabs(prevTabs, activeTabId, view, openInNewTab);
+        setActiveTabId(res.activeTabId);
+        return res.tabs;
+      });
+    },
+    [activeTabId]
+  );
+
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [artAssets, setArtAssets] = useState<ArtAsset[]>([]);
   const [currentEntry, setCurrentEntry] = useState<Entry | null>(null);
@@ -182,6 +210,24 @@ export default function App() {
     };
   }, [activeWorldSlug, activeView, bridge]);
 
+  // Load secondary split pane entry when split view shows an entry
+  useEffect(() => {
+    if (!activeWorldSlug || !splitView || splitView.kind !== 'entry') {
+      setSplitEntry(null);
+      return;
+    }
+    let cancelled = false;
+    bridge
+      .readEntry(activeWorldSlug, splitView.entryId)
+      .then((e) => {
+        if (!cancelled) setSplitEntry(e);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorldSlug, splitView, bridge]);
+
   // Live refresh when OneDrive/Google Drive syncs external file changes
   useEffect(() => {
     return bridge.onWorkspaceChanged(async (evt) => {
@@ -214,7 +260,10 @@ export default function App() {
 
   const handleSelectWorld = async (slug: string) => {
     setActiveWorldSlug(slug);
-    setActiveView({ kind: 'overview' });
+    const resetTab: WorkspaceTab = { id: `tab-${Date.now()}`, view: { kind: 'overview' } };
+    setTabs([resetTab]);
+    setActiveTabId(resetTab.id);
+    setSplitView(null);
     await bridge.updateWorkspaceConfig({ activeWorldSlug: slug });
   };
 
@@ -267,6 +316,52 @@ export default function App() {
     await refreshWorldData(activeWorld.slug);
     const bl = await bridge.getBacklinks(activeWorld.slug, updated.id);
     setBacklinks(bl);
+  };
+
+  const handleUpdateSplitEntry = async (
+    patch: Parameters<typeof bridge.updateEntry>[0] extends infer P
+      ? Omit<P, 'worldSlug' | 'id'>
+      : never
+  ) => {
+    if (!activeWorld || !splitEntry) return;
+    const updated = await bridge.updateEntry({
+      worldSlug: activeWorld.slug,
+      id: splitEntry.id,
+      ...patch,
+    });
+    setSplitEntry(updated);
+    if (currentEntry && currentEntry.id === updated.id) {
+      setCurrentEntry(updated);
+    }
+    await refreshWorldData(activeWorld.slug);
+  };
+
+  const handleCloseTab = (tabId: string) => {
+    const res = closeTabById(tabs, activeTabId, tabId);
+    setTabs(res.tabs);
+    setActiveTabId(res.activeTabId);
+  };
+
+  const handleNewTab = () => {
+    const next: WorkspaceTab = { id: `tab-${Date.now()}`, view: { kind: 'overview' } };
+    setTabs((prev) => [...prev, next]);
+    setActiveTabId(next.id);
+  };
+
+  const handleToggleSplit = () => {
+    if (splitView) {
+      setSplitView(null);
+    } else {
+      setSplitView(activeView.kind === 'maps' ? { kind: 'art' } : { kind: 'maps' });
+    }
+  };
+
+  const handleSwapSplit = () => {
+    if (!splitView) return;
+    const primary = activeView;
+    const secondary = splitView;
+    setActiveView(secondary);
+    setSplitView(primary);
   };
 
   const handleDeleteCurrentEntry = async () => {
@@ -365,7 +460,22 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 flex min-w-0 h-full overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        {activeWorld && (
+          <WorkspaceTabBar
+            world={activeWorld}
+            entries={entries}
+            tabs={tabs}
+            activeTabId={activeTabId}
+            splitOpen={Boolean(splitView)}
+            onSelectTab={setActiveTabId}
+            onCloseTab={handleCloseTab}
+            onNewTab={handleNewTab}
+            onToggleSplit={handleToggleSplit}
+          />
+        )}
+
+        <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
         {!activeWorld ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
             <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-600 flex items-center justify-center">
@@ -390,83 +500,230 @@ export default function App() {
               </button>
             </div>
           </div>
-        ) : activeView.kind === 'overview' ? (
-          <WorldOverview
-            world={activeWorld}
-            entries={entries}
-            artAssets={artAssets}
-            onCreateEntry={handleCreateEntry}
-            onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-            onOpenArtGallery={() => setActiveView({ kind: 'art' })}
-            onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
-          />
-        ) : activeView.kind === 'art' ? (
-          <ArtGalleryView
-            world={activeWorld}
-            artAssets={artAssets}
-            onRefreshArt={() => refreshWorldData(activeWorld.slug)}
-            onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-          />
-        ) : activeView.kind === 'graph' ? (
-          <WorldGraphView
-            world={activeWorld}
-            onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-          />
-        ) : activeView.kind === 'maps' ? (
-          <MapsView
-            world={activeWorld}
-            entries={entries}
-            artAssets={artAssets}
-            onRefreshArt={() => refreshWorldData(activeWorld.slug)}
-            onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-          />
-        ) : activeView.kind === 'moodboards' ? (
-          <MoodboardView
-            world={activeWorld}
-            artAssets={artAssets}
-            onRefreshArt={() => refreshWorldData(activeWorld.slug)}
-          />
-        ) : activeView.kind === 'collection' && activeCollectionType ? (
-          <CollectionView
-            world={activeWorld}
-            entityType={activeCollectionType}
-            entries={entries}
-            artAssets={artAssets}
-            onCreateEntry={handleCreateEntry}
-            onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-          />
-        ) : activeView.kind === 'entry' && currentEntry ? (
+        ) : (
           <>
-            <EntryEditor
-              world={activeWorld}
-              entry={currentEntry}
-              allEntries={entries}
-              artAssets={artAssets}
-              inspectorOpen={inspectorOpen}
-              onToggleInspector={() => setInspectorOpen((v) => !v)}
-              onSaveEntry={handleUpdateCurrentEntry}
-              onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-              onCreateStubEntry={handleCreateStubEntry}
-            />
-            {inspectorOpen && (
-              <EntryInspector
-                world={activeWorld}
-                entry={currentEntry}
-                allEntries={entries}
-                backlinks={backlinks}
-                onChangeType={(type) => handleUpdateCurrentEntry({ type })}
-                onChangeSecondaryTypes={(secondaryTypes) =>
-                  handleUpdateCurrentEntry({ secondaryTypes })
-                }
-                onChangeFolder={(folder) => handleUpdateCurrentEntry({ folder })}
-                onUpdateProperties={(properties) => handleUpdateCurrentEntry({ properties })}
-                onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
-                onCreateStubEntry={handleCreateStubEntry}
-                onDeleteEntry={handleDeleteCurrentEntry}
-              />
+            {/* Primary Pane */}
+            <div className="flex-1 flex min-w-0 h-full overflow-hidden">
+              {activeView.kind === 'overview' ? (
+                <WorldOverview
+                  world={activeWorld}
+                  entries={entries}
+                  artAssets={artAssets}
+                  onCreateEntry={handleCreateEntry}
+                  onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                  onOpenArtGallery={() => setActiveView({ kind: 'art' }, true)}
+                  onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
+                />
+              ) : activeView.kind === 'art' ? (
+                <ArtGalleryView
+                  world={activeWorld}
+                  artAssets={artAssets}
+                  onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                  onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                />
+              ) : activeView.kind === 'graph' ? (
+                <WorldGraphView
+                  world={activeWorld}
+                  onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                />
+              ) : activeView.kind === 'maps' ? (
+                <MapsView
+                  world={activeWorld}
+                  entries={entries}
+                  artAssets={artAssets}
+                  onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                  onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                />
+              ) : activeView.kind === 'moodboards' ? (
+                <MoodboardView
+                  world={activeWorld}
+                  artAssets={artAssets}
+                  onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                />
+              ) : activeView.kind === 'collection' && activeCollectionType ? (
+                <CollectionView
+                  world={activeWorld}
+                  entityType={activeCollectionType}
+                  entries={entries}
+                  artAssets={artAssets}
+                  onCreateEntry={handleCreateEntry}
+                  onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                />
+              ) : activeView.kind === 'entry' && currentEntry ? (
+                <>
+                  <EntryEditor
+                    world={activeWorld}
+                    entry={currentEntry}
+                    allEntries={entries}
+                    artAssets={artAssets}
+                    inspectorOpen={inspectorOpen && !splitView}
+                    onToggleInspector={() => setInspectorOpen((v) => !v)}
+                    onSaveEntry={handleUpdateCurrentEntry}
+                    onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                    onCreateStubEntry={handleCreateStubEntry}
+                  />
+                  {inspectorOpen && !splitView && (
+                    <EntryInspector
+                      world={activeWorld}
+                      entry={currentEntry}
+                      allEntries={entries}
+                      backlinks={backlinks}
+                      onChangeType={(type) => handleUpdateCurrentEntry({ type })}
+                      onChangeSecondaryTypes={(secondaryTypes) =>
+                        handleUpdateCurrentEntry({ secondaryTypes })
+                      }
+                      onChangeFolder={(folder) => handleUpdateCurrentEntry({ folder })}
+                      onUpdateProperties={(properties) =>
+                        handleUpdateCurrentEntry({ properties })
+                      }
+                      onNavigateEntry={(entryId) =>
+                        setActiveView({ kind: 'entry', entryId }, true)
+                      }
+                      onCreateStubEntry={handleCreateStubEntry}
+                      onDeleteEntry={handleDeleteCurrentEntry}
+                    />
+                  )}
+                </>
+              ) : null}
+            </div>
+
+            {/* Secondary Side-by-Side Split Pane */}
+            {splitView && (
+              <div className="w-1/2 shrink-0 flex flex-col min-w-0 h-full border-l border-[var(--studio-border)] overflow-hidden">
+                <div className="h-9 shrink-0 px-3 flex items-center justify-between gap-2 border-b border-[var(--studio-border)] bg-[var(--studio-sidebar)]">
+                  <select
+                    value={
+                      splitView.kind === 'entry'
+                        ? `entry:${splitView.entryId}`
+                        : splitView.kind === 'collection'
+                          ? `collection:${splitView.typeId}`
+                          : splitView.kind
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v.startsWith('entry:')) {
+                        setSplitView({ kind: 'entry', entryId: v.slice(6) });
+                      } else if (v.startsWith('collection:')) {
+                        setSplitView({ kind: 'collection', typeId: v.slice(11) });
+                      } else {
+                        setSplitView({ kind: v as 'overview' | 'art' | 'graph' | 'maps' | 'moodboards' });
+                      }
+                    }}
+                    className="rounded-md border border-[var(--studio-border)] bg-[var(--studio-surface)] px-2 py-1 text-xs outline-none max-w-[240px]"
+                  >
+                    <optgroup label="Studio Views">
+                      <option value="maps">Maps</option>
+                      <option value="moodboards">Moodboards</option>
+                      <option value="art">Concept Art</option>
+                      <option value="graph">Lore Graph</option>
+                      <option value="overview">Overview</option>
+                    </optgroup>
+                    <optgroup label="Collections">
+                      {activeWorld.entityTypes.map((et) => (
+                        <option key={et.id} value={`collection:${et.id}`}>
+                          {et.pluralName}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Lore Entries">
+                      {entries.slice(0, 60).map((e) => (
+                        <option key={e.id} value={`entry:${e.id}`}>
+                          {e.title}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={handleSwapSplit}
+                      title="Swap Left & Right Panes"
+                      className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-[var(--studio-muted)] cursor-pointer"
+                    >
+                      <ArrowLeftRight className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setSplitView(null)}
+                      title="Close Split Pane"
+                      className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-[var(--studio-muted)] cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
+                  {splitView.kind === 'maps' ? (
+                    <MapsView
+                      world={activeWorld}
+                      entries={entries}
+                      artAssets={artAssets}
+                      onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                      onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                    />
+                  ) : splitView.kind === 'moodboards' ? (
+                    <MoodboardView
+                      world={activeWorld}
+                      artAssets={artAssets}
+                      onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                    />
+                  ) : splitView.kind === 'art' ? (
+                    <ArtGalleryView
+                      world={activeWorld}
+                      artAssets={artAssets}
+                      onRefreshArt={() => refreshWorldData(activeWorld.slug)}
+                      onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                    />
+                  ) : splitView.kind === 'graph' ? (
+                    <WorldGraphView
+                      world={activeWorld}
+                      onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                    />
+                  ) : splitView.kind === 'overview' ? (
+                    <WorldOverview
+                      world={activeWorld}
+                      entries={entries}
+                      artAssets={artAssets}
+                      onCreateEntry={handleCreateEntry}
+                      onSelectEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
+                      onOpenArtGallery={() => setSplitView({ kind: 'art' })}
+                      onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
+                    />
+                  ) : splitView.kind === 'collection' ? (
+                    (() => {
+                      const colType = activeWorld.entityTypes.find(
+                        (t) => t.id === splitView.typeId
+                      );
+                      return colType ? (
+                        <CollectionView
+                          world={activeWorld}
+                          entityType={colType}
+                          entries={entries}
+                          artAssets={artAssets}
+                          onCreateEntry={handleCreateEntry}
+                          onSelectEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
+                        />
+                      ) : null;
+                    })()
+                  ) : splitView.kind === 'entry' && splitEntry ? (
+                    <EntryEditor
+                      world={activeWorld}
+                      entry={splitEntry}
+                      allEntries={entries}
+                      artAssets={artAssets}
+                      inspectorOpen={false}
+                      onToggleInspector={() => {}}
+                      onSaveEntry={handleUpdateSplitEntry}
+                      onNavigateEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
+                      onCreateStubEntry={handleCreateStubEntry}
+                    />
+                  ) : null}
+                </div>
+              </div>
             )}
           </>
-        ) : null}
+        )}
+        </div>
       </main>
 
       {/* Modals & Drawers */}
