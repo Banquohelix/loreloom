@@ -1,6 +1,7 @@
 import { Marked } from 'marked';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
+import { calloutMarkedExtension, escapeHtmlAttr, serializeCallout, type CalloutFold } from '@shared/callouts';
 
 /**
  * Lossless-as-possible bridge between on-disk Markdown (the source of truth, Obsidian-compatible)
@@ -8,6 +9,7 @@ import { gfm } from 'turndown-plugin-gfm';
  *  - `[[wikilinks]]` must never be backslash-escaped
  *  - GFM task lists must load as TipTap taskList/taskItem nodes
  *  - tables, strikethrough and links must survive
+ *  - Obsidian callouts (`> [!canon] Title`) load as callout blocks and save back unchanged
  */
 
 const WIKILINK_SPLIT = /(!?\[\[[^[\]\n]+\]\])/;
@@ -36,13 +38,51 @@ marked.use({
   },
 });
 
+// Callouts become TipTap callout nodes (see callout-extension.tsx)
+marked.use(
+  calloutMarkedExtension(
+    (c, bodyHtml) =>
+      `<div data-callout="${escapeHtmlAttr(c.kind)}" data-fold="${c.fold}" data-title="${escapeHtmlAttr(c.title)}">${
+        bodyHtml || '<p></p>'
+      }</div>\n`
+  )
+);
+
 const turndown = new TurndownService({
   headingStyle: 'atx',
   bulletListMarker: '-',
   codeBlockStyle: 'fenced',
   emDelimiter: '*',
+  // Blank nodes skip the rules, so an empty callout would otherwise vanish on save
+  blankReplacement: (_content, node) => {
+    const el = node as HTMLElement;
+    if (el.nodeName === 'DIV' && el.hasAttribute?.('data-callout')) return `\n\n${calloutMarkdown(el, '')}\n\n`;
+    return (node as unknown as { isBlock?: boolean }).isBlock ? '\n\n' : '';
+  },
 });
 turndown.use(gfm);
+
+// `- item` / `1. item` like Obsidian and most editors (Turndown's default is `-   item`, which
+// rewrote every list in a file on its first save). Task items have their own rule below.
+turndown.addRule('compactListItem', {
+  filter: 'li',
+  replacement: (content, node) => {
+    const parent = node.parentNode as HTMLElement | null;
+    let prefix = '- ';
+    if (parent?.nodeName === 'OL') {
+      const start = Number(parent.getAttribute('start') || 1);
+      prefix = `${start + Array.prototype.indexOf.call(parent.children, node)}. `;
+    }
+    // TipTap wraps every item in <p>, so trailing blank lines are dropped (lists are written tight)
+    const body = content
+      .replace(/^\n+/, '')
+      .replace(/\s+$/, '')
+      .replace(/\n\n+(?=\s*(?:[-*+]|\d+\.) )/g, '\n') // nested list directly under the item text
+      .replace(/\n/gm, `\n${' '.repeat(prefix.length)}`)
+      .replace(/^ +$/gm, '');
+    return prefix + body + (node.nextSibling ? '\n' : '');
+  },
+});
 
 // Rules added later take precedence over plugin rules.
 turndown.addRule('tiptapTaskItem', {
@@ -57,6 +97,21 @@ turndown.addRule('tiptapTaskItem', {
       .replace(/\n/gm, '\n    ');
     return `- [${checked ? 'x' : ' '}] ${body}${el.nextSibling ? '\n' : ''}`;
   },
+});
+
+function calloutMarkdown(el: HTMLElement, content: string): string {
+  const fold = (el.getAttribute('data-fold') || '') as CalloutFold;
+  return serializeCallout(
+    el.getAttribute('data-callout') || 'note',
+    fold === '+' || fold === '-' ? fold : '',
+    (el.getAttribute('data-title') || '').replace(/\s+/g, ' ').trim(),
+    content
+  );
+}
+
+turndown.addRule('callout', {
+  filter: (node) => node.nodeName === 'DIV' && (node as HTMLElement).hasAttribute('data-callout'),
+  replacement: (content, node) => `\n\n${calloutMarkdown(node as HTMLElement, content)}\n\n`,
 });
 
 turndown.addRule('strikethroughDouble', {
