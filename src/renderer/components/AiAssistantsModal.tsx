@@ -44,14 +44,26 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint: strin
   );
 }
 
-/** Connect Claude, ChatGPT, Grok and other MCP clients to this workspace. */
+type ClientTab = 'claude-code' | 'claude-desktop' | 'cursor' | 'opencode' | 'grok' | 'chatgpt' | 'other';
+
+const CLIENT_TABS: Array<[ClientTab, string]> = [
+  ['claude-code', 'Claude Code'],
+  ['claude-desktop', 'Claude Desktop'],
+  ['cursor', 'Cursor'],
+  ['opencode', 'OpenCode'],
+  ['grok', 'Grok Build'],
+  ['chatgpt', 'ChatGPT'],
+  ['other', 'Other'],
+];
+
+/** Connect Claude, Cursor, OpenCode, Grok Build, ChatGPT and other MCP clients to this workspace. */
 export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [portDraft, setPortDraft] = useState('');
   const [reveal, setReveal] = useState(false);
-  const [tab, setTab] = useState<'claude-code' | 'claude-desktop' | 'other'>('claude-code');
+  const [tab, setTab] = useState<ClientTab>('claude-code');
 
   useEffect(() => {
     bridge
@@ -72,6 +84,20 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
       notifyError('Could not change AI assistant settings', err);
     }
   };
+
+  const cursorConfig = status
+    ? JSON.stringify({ mcpServers: { loreloom: { url: status.url, headers: { Authorization: `Bearer ${status.token}` } } } }, null, 2)
+    : '';
+  const opencodeConfig = status
+    ? JSON.stringify(
+        {
+          $schema: 'https://opencode.ai/config.json',
+          mcp: { loreloom: { type: 'remote', url: status.url, oauth: false, headers: { Authorization: `Bearer ${status.token}` }, enabled: true } },
+        },
+        null,
+        2
+      )
+    : '';
 
   const desktopConfig = status
     ? JSON.stringify(
@@ -106,7 +132,7 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
             <div>
               <h2 className="text-base font-semibold">AI Assistants</h2>
               <p className="text-xs text-[var(--studio-muted)]">
-                Let Claude, ChatGPT, Grok and other MCP apps search, write lore, save concept art and pin maps in your Worlds.
+                Let Claude, Cursor, OpenCode, Grok Build and ChatGPT search, write lore, save concept art and pin maps in your Worlds.
               </p>
             </div>
           </div>
@@ -192,13 +218,7 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                 </div>
 
                 <div role="tablist" aria-label="Assistant" className="flex flex-wrap gap-1.5">
-                  {(
-                    [
-                      ['claude-code', 'Claude Code'],
-                      ['claude-desktop', 'Claude Desktop'],
-                      ['other', 'Other MCP apps'],
-                    ] as const
-                  ).map(([id, label]) => (
+                  {CLIENT_TABS.map(([id, label]) => (
                     <button
                       key={id}
                       role="tab"
@@ -231,14 +251,49 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                     )}
                   </div>
                 )}
+                {tab === 'cursor' && (
+                  <div className="space-y-2">
+                    <CopyBlock
+                      label="Add to %USERPROFILE%\.cursor\mcp.json (global, keeps the token out of your repos), then restart Cursor"
+                      value={cursorConfig}
+                      secret={reveal ? undefined : status.token}
+                    />
+                    <p className="text-[11px] text-[var(--studio-muted)]">If the file already has servers, add the "loreloom" entry inside its mcpServers.</p>
+                  </div>
+                )}
+                {tab === 'opencode' && (
+                  <div className="space-y-2">
+                    <CopyBlock
+                      label="Add to %USERPROFILE%\.config\opencode\opencode.json (global config)"
+                      value={opencodeConfig}
+                      secret={reveal ? undefined : status.token}
+                    />
+                    <p className="text-[11px] text-[var(--studio-muted)]">
+                      Merge the "loreloom" entry into the file's existing mcp section. oauth is off because Loreloom uses the token instead.
+                    </p>
+                  </div>
+                )}
+                {tab === 'grok' && (
+                  <div className="space-y-2">
+                    <CopyBlock
+                      label="Run once in a terminal"
+                      value={`grok mcp add --transport http loreloom ${status.url} --header "Authorization: Bearer ${status.token}"`}
+                      secret={reveal ? undefined : status.token}
+                    />
+                    <CopyBlock label="Then check the connection" value="grok mcp doctor loreloom" />
+                  </div>
+                )}
+                {tab === 'chatgpt' && (
+                  <p className="text-xs text-[var(--studio-muted)] rounded-lg border border-dashed border-[var(--studio-border)] p-3">
+                    ChatGPT runs in OpenAI's cloud, so it can't reach a server that only listens on this PC. Secure remote access (a private tunnel
+                    with a sign-in in front of it) is coming in the next update. The other apps here run on your PC and can connect now.
+                  </p>
+                )}
                 {tab === 'other' && (
                   <div className="space-y-2">
                     <CopyBlock label="Server URL (Streamable HTTP)" value={status.url} />
                     <CopyBlock label="Header" value={`Authorization: Bearer ${status.token}`} secret={reveal ? undefined : status.token} />
-                    <p className="text-[11px] text-[var(--studio-muted)]">
-                      Works with MCP apps running on this PC, such as Cursor or Grok's command-line tool. ChatGPT and the Grok app run in the
-                      cloud and can't reach this PC directly; secure remote access for them is coming next.
-                    </p>
+                    <p className="text-[11px] text-[var(--studio-muted)]">For any other MCP app running on this PC.</p>
                   </div>
                 )}
                 <p className="text-[11px] text-[var(--studio-muted)]">
