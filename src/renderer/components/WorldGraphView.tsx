@@ -27,6 +27,7 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [hideIsolated, setHideIsolated] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
@@ -228,6 +229,18 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
             {hideIsolated ? 'Connected Only' : 'Show All'}
           </button>
 
+          <button
+            onClick={() => setShowEdgeLabels((v) => !v)}
+            className={`px-2.5 py-1.5 rounded-lg border text-xs cursor-pointer ${
+              showEdgeLabels
+                ? 'border-amber-500/60 bg-amber-500/10 font-medium'
+                : 'border-[var(--world-canvas-border)] bg-[var(--world-canvas-muted)]/60'
+            }`}
+            title="Show typed relationship labels on edges"
+          >
+            Edge Labels
+          </button>
+
           <div className="flex items-center rounded-lg border border-[var(--world-canvas-border)] bg-[var(--world-canvas-muted)]/60 p-0.5">
             <button
               onClick={() => setZoom((z) => Math.min(3, z * 1.2))}
@@ -296,17 +309,36 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
                   const highlighted =
                     hoveredId && (edge.sourceId === hoveredId || edge.targetId === hoveredId);
                   const dimmed = hoveredId && !highlighted;
+                  const isTyped = Boolean(edge.label);
+                  const midX = (a.x + b.x) / 2;
+                  const midY = (a.y + b.y) / 2;
                   return (
-                    <line
-                      key={`${edge.sourceId}-${edge.targetId}`}
-                      x1={a.x}
-                      y1={a.y}
-                      x2={b.x}
-                      y2={b.y}
-                      stroke={highlighted ? 'var(--world-accent)' : 'currentColor'}
-                      strokeOpacity={highlighted ? 0.85 : dimmed ? 0.06 : 0.22}
-                      strokeWidth={highlighted ? 2 : 1.1}
-                    />
+                    <g key={`${edge.sourceId}-${edge.targetId}`}>
+                      <line
+                        x1={a.x}
+                        y1={a.y}
+                        x2={b.x}
+                        y2={b.y}
+                        stroke={highlighted || isTyped ? 'var(--world-accent)' : 'currentColor'}
+                        strokeOpacity={
+                          highlighted ? 0.9 : dimmed ? 0.06 : isTyped ? 0.55 : 0.22
+                        }
+                        strokeWidth={highlighted ? 2.2 : isTyped ? 1.6 : 1.1}
+                      />
+                      {edge.label && (showEdgeLabels || highlighted) && !dimmed && (
+                        <text
+                          x={midX}
+                          y={midY - 4}
+                          textAnchor="middle"
+                          fill="var(--world-accent)"
+                          fontSize={9.5}
+                          fontWeight={600}
+                          className="pointer-events-none"
+                        >
+                          {edge.label}
+                        </text>
+                      )}
+                    </g>
                   );
                 })}
 

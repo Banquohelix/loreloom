@@ -99,4 +99,28 @@ describe('IndexEngine', () => {
     expect(graph.nodes.find((n) => n.id === bellamare.id)?.connectionCount).toBe(1);
     expect(graph.nodes.find((n) => n.id === deepfire.id)?.connectionCount).toBe(1);
   });
+
+  it('includes typed relationships as labeled edges in WorldGraph', async () => {
+    const world = await store.createWorld({ name: 'Neon Ash', medium: 'video-game' });
+    const kurogane = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Kurogane Heavy Logistics',
+      type: 'faction',
+      body: 'Megacorp.',
+    });
+    const spire = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Kurogane Spire',
+      type: 'location',
+      relationships: [{ id: 'r1', targetId: kurogane.id, label: 'Controlled by' }],
+      body: 'Corporate arcology.',
+    });
+
+    await index.rebuildWorkspace(store);
+    const graph = index.getWorldGraph(world.slug);
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.edges[0].sourceId).toBe(spire.id);
+    expect(graph.edges[0].targetId).toBe(kurogane.id);
+    expect(graph.edges[0].label).toBe('Controlled by');
+  });
 });

@@ -41,6 +41,7 @@ interface EntryRow {
   slug: string;
   type: string;
   secondary_types_json: string;
+  relationships_json: string;
   folder: string;
   relative_path: string;
   tags_json: string;
@@ -81,6 +82,7 @@ export class IndexEngine {
         slug TEXT NOT NULL,
         type TEXT NOT NULL,
         secondary_types_json TEXT NOT NULL DEFAULT '[]',
+        relationships_json TEXT NOT NULL DEFAULT '[]',
         folder TEXT NOT NULL,
         relative_path TEXT NOT NULL,
         tags_json TEXT NOT NULL,
@@ -118,6 +120,9 @@ export class IndexEngine {
     const cols = this.db.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === 'secondary_types_json')) {
       this.db.exec("ALTER TABLE entries ADD COLUMN secondary_types_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!cols.some((c) => c.name === 'relationships_json')) {
+      this.db.exec("ALTER TABLE entries ADD COLUMN relationships_json TEXT NOT NULL DEFAULT '[]'");
     }
   }
 
@@ -174,8 +179,8 @@ export class IndexEngine {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO entries
-        (id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt, body)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, world_slug, title, slug, type, secondary_types_json, relationships_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt, body)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         entry.id,
@@ -184,6 +189,7 @@ export class IndexEngine {
         entry.slug,
         entry.type,
         JSON.stringify(entry.secondaryTypes ?? []),
+        JSON.stringify(entry.relationships ?? []),
         entry.folder,
         entry.relativePath,
         JSON.stringify(entry.tags),
@@ -242,7 +248,7 @@ export class IndexEngine {
     const orderDir = query.sortDir === 'asc' ? 'ASC' : 'DESC';
 
     const sql = `
-      SELECT id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
+      SELECT id, world_slug, title, slug, type, secondary_types_json, relationships_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
       FROM entries
       WHERE ${clauses.join(' AND ')}
       ORDER BY ${orderCol} ${orderDir}
@@ -280,22 +286,50 @@ export class IndexEngine {
 
   getWorldGraph(worldSlug: string): WorldGraph {
     const entryRows = this.db
-      .prepare('SELECT id, title, slug, type FROM entries WHERE world_slug = ?')
-      .all(worldSlug) as Array<{ id: string; title: string; slug: string; type: string }>;
+      .prepare('SELECT id, title, slug, type, relationships_json FROM entries WHERE world_slug = ?')
+      .all(worldSlug) as Array<{
+      id: string;
+      title: string;
+      slug: string;
+      type: string;
+      relationships_json: string;
+    }>;
 
+    const idSet = new Set(entryRows.map((r) => r.id));
     const idByKey = new Map<string, string>();
     for (const row of entryRows) {
       idByKey.set(row.title.toLowerCase(), row.id);
       idByKey.set(row.slug.toLowerCase(), row.id);
     }
 
-    const linkRows = this.db
-      .prepare('SELECT source_id, target_key FROM links WHERE world_slug = ?')
-      .all(worldSlug) as Array<{ source_id: string; target_key: string }>;
-
     const edgeSet = new Set<string>();
     const edges: GraphEdge[] = [];
     const degree = new Map<string, number>();
+
+    // 1. Typed Relationships first (labeled edges)
+    for (const row of entryRows) {
+      let rels: Array<{ targetId: string; label?: string }> = [];
+      try {
+        rels = JSON.parse(row.relationships_json || '[]');
+      } catch {
+        rels = [];
+      }
+      for (const rel of rels) {
+        if (!rel.targetId || rel.targetId === row.id || !idSet.has(rel.targetId)) continue;
+        const pairKey =
+          row.id < rel.targetId ? `${row.id}::${rel.targetId}` : `${rel.targetId}::${row.id}`;
+        if (edgeSet.has(pairKey)) continue;
+        edgeSet.add(pairKey);
+        edges.push({ sourceId: row.id, targetId: rel.targetId, label: rel.label || undefined });
+        degree.set(row.id, (degree.get(row.id) ?? 0) + 1);
+        degree.set(rel.targetId, (degree.get(rel.targetId) ?? 0) + 1);
+      }
+    }
+
+    // 2. Wikilink edges (unlabeled)
+    const linkRows = this.db
+      .prepare('SELECT source_id, target_key FROM links WHERE world_slug = ?')
+      .all(worldSlug) as Array<{ source_id: string; target_key: string }>;
 
     for (const link of linkRows) {
       const targetId = idByKey.get(link.target_key);
@@ -324,7 +358,7 @@ export class IndexEngine {
   getEntriesLinkingAsset(worldSlug: string, assetId: string, assetFilename: string): EntrySummary[] {
     const rows = this.db
       .prepare(
-        `SELECT id, world_slug, title, slug, type, secondary_types_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
+        `SELECT id, world_slug, title, slug, type, secondary_types_json, relationships_json, folder, relative_path, tags_json, properties_json, cover_asset_id, portrait_asset_id, updated_at, excerpt
          FROM entries
          WHERE world_slug = ?
            AND (cover_asset_id = ? OR portrait_asset_id = ? OR body LIKE ?)`
@@ -375,6 +409,7 @@ export class IndexEngine {
       slug: row.slug,
       type: row.type,
       secondaryTypes: JSON.parse(row.secondary_types_json || '[]'),
+      relationships: JSON.parse(row.relationships_json || '[]'),
       folder: row.folder,
       relativePath: row.relative_path,
       tags: JSON.parse(row.tags_json || '[]'),

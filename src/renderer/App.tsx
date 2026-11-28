@@ -595,6 +595,9 @@ export default function App() {
                       onChangeSecondaryTypes={(secondaryTypes) =>
                         handleUpdateCurrentEntry({ secondaryTypes })
                       }
+                      onUpdateRelationships={(relationships) =>
+                        handleUpdateCurrentEntry({ relationships })
+                      }
                       onChangeFolder={(folder) => handleUpdateCurrentEntry({ folder })}
                       onUpdateProperties={(properties) =>
                         handleUpdateCurrentEntry({ properties })

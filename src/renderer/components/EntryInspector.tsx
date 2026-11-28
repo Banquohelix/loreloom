@@ -1,12 +1,24 @@
-import { useMemo } from 'react';
-import { ArrowUpRight, Link2, Plus, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ArrowUpRight, GitBranch, Link2, Plus, Trash2, X } from 'lucide-react';
 import type {
   BacklinkRef,
   Entry,
   EntryPropertyValue,
+  EntryRelationship,
   EntrySummary,
   WorldConfig,
 } from '@shared/types';
+
+const PRESET_REL_LABELS = [
+  'Allied with',
+  'Controlled by',
+  'Located in',
+  'Member of',
+  'Rival of',
+  'Pilots',
+  'Created by',
+  'Part of',
+];
 
 interface EntryInspectorProps {
   world: WorldConfig;
@@ -15,6 +27,7 @@ interface EntryInspectorProps {
   backlinks: BacklinkRef[];
   onChangeType: (typeId: string) => Promise<void>;
   onChangeSecondaryTypes: (secondaryTypes: string[]) => Promise<void>;
+  onUpdateRelationships: (relationships: EntryRelationship[]) => Promise<void>;
   onChangeFolder: (folder: string) => Promise<void>;
   onUpdateProperties: (properties: Record<string, EntryPropertyValue>) => Promise<void>;
   onNavigateEntry: (entryId: string) => void;
@@ -29,6 +42,7 @@ export function EntryInspector({
   backlinks,
   onChangeType,
   onChangeSecondaryTypes,
+  onUpdateRelationships,
   onChangeFolder,
   onUpdateProperties,
   onNavigateEntry,
@@ -37,6 +51,28 @@ export function EntryInspector({
 }: EntryInspectorProps) {
   const activeType = world.entityTypes.find((t) => t.id === entry.type) ?? world.entityTypes[0];
   const secondaryTypes = entry.secondaryTypes ?? [];
+  const relationships = entry.relationships ?? [];
+
+  const [addingRel, setAddingRel] = useState(false);
+  const [relLabel, setRelLabel] = useState(PRESET_REL_LABELS[0]);
+  const [relTargetId, setRelTargetId] = useState('');
+
+  const entryById = useMemo(() => new Map(allEntries.map((e) => [e.id, e])), [allEntries]);
+
+  const handleAddRelationship = async () => {
+    if (!relTargetId || !relLabel.trim()) return;
+    const next: EntryRelationship[] = [
+      ...relationships,
+      { id: crypto.randomUUID(), targetId: relTargetId, label: relLabel.trim() },
+    ];
+    await onUpdateRelationships(next);
+    setRelTargetId('');
+    setAddingRel(false);
+  };
+
+  const handleRemoveRelationship = async (relId: string) => {
+    await onUpdateRelationships(relationships.filter((r) => r.id !== relId));
+  };
 
   const outgoingLinks = useMemo(() => {
     const found = new Map<string, { target: string; matched?: EntrySummary }>();
@@ -193,6 +229,103 @@ export function EntryInspector({
           ))}
         </div>
       )}
+
+      {/* Typed Relationships */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--studio-muted)] flex items-center gap-1">
+            <GitBranch className="w-3 h-3" /> Relationships ({relationships.length})
+          </span>
+          <button
+            onClick={() => setAddingRel((v) => !v)}
+            className="p-0.5 rounded hover:bg-black/8 dark:hover:bg-white/10 text-[var(--studio-muted)] hover:text-[var(--studio-text)] cursor-pointer"
+            title="Add Typed Relationship"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {addingRel && (
+          <div className="p-2.5 rounded-xl border border-[var(--studio-border)] bg-[var(--studio-surface)] space-y-2">
+            <input
+              list="loreloom-rel-presets"
+              value={relLabel}
+              onChange={(e) => setRelLabel(e.target.value)}
+              placeholder="Relationship label…"
+              className="w-full rounded-lg border border-[var(--studio-border)] bg-transparent px-2 py-1 text-xs outline-none"
+            />
+            <datalist id="loreloom-rel-presets">
+              {PRESET_REL_LABELS.map((l) => (
+                <option key={l} value={l} />
+              ))}
+            </datalist>
+            <select
+              value={relTargetId}
+              onChange={(e) => setRelTargetId(e.target.value)}
+              className="w-full rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] px-2 py-1 text-xs outline-none"
+            >
+              <option value="">Select target entry…</option>
+              {allEntries
+                .filter((e) => e.id !== entry.id)
+                .sort((a, b) => a.title.localeCompare(b.title))
+                .map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.title} ({e.type})
+                  </option>
+                ))}
+            </select>
+            <div className="flex justify-end gap-1.5">
+              <button
+                onClick={() => setAddingRel(false)}
+                className="px-2 py-1 rounded text-[11px] text-[var(--studio-muted)] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddRelationship}
+                disabled={!relTargetId || !relLabel.trim()}
+                className="px-2.5 py-1 rounded-md bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-[11px] font-medium disabled:opacity-40 cursor-pointer"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+
+        {relationships.length > 0 && (
+          <div className="space-y-1.5">
+            {relationships.map((rel) => {
+              const target = entryById.get(rel.targetId);
+              if (!target) return null;
+              return (
+                <div
+                  key={rel.id}
+                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] text-xs"
+                >
+                  <button
+                    onClick={() => onNavigateEntry(target.id)}
+                    className="min-w-0 flex-1 text-left cursor-pointer group"
+                  >
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                      {rel.label}
+                    </div>
+                    <div className="truncate font-medium group-hover:underline">
+                      {target.title}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleRemoveRelationship(rel.id)}
+                    className="p-0.5 text-[var(--studio-muted)] hover:text-red-500 cursor-pointer shrink-0"
+                    title="Remove relationship"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Outgoing [[Wikilinks]] */}
       {outgoingLinks.length > 0 && (

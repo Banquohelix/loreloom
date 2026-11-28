@@ -12,6 +12,7 @@ import type {
   CreateWorldInput,
   Entry,
   EntryPropertyValue,
+  EntryRelationship,
   MoodboardDef,
   UpdateEntryInput,
   WorkspaceConfig,
@@ -284,6 +285,18 @@ export class WorkspaceStore {
             )
           )
         : [];
+      const relationships: EntryRelationship[] = Array.isArray(data.relationships)
+        ? data.relationships
+            .filter(
+              (r): r is Record<string, unknown> =>
+                Boolean(r) && typeof r === 'object' && typeof (r as Record<string, unknown>).targetId === 'string'
+            )
+            .map((r) => ({
+              id: typeof r.id === 'string' && r.id ? r.id : crypto.randomUUID(),
+              targetId: String(r.targetId),
+              label: typeof r.label === 'string' && r.label.trim() ? r.label.trim() : 'Related to',
+            }))
+        : [];
       const tags = Array.isArray(data.tags)
         ? data.tags.map((t) => String(t).replace(/^#/, '').trim()).filter(Boolean)
         : typeof data.tags === 'string'
@@ -320,6 +333,7 @@ export class WorkspaceStore {
         slug: filenameBase,
         type,
         secondaryTypes,
+        relationships,
         folder: folderRel,
         relativePath,
         tags,
@@ -348,6 +362,9 @@ export class WorkspaceStore {
     };
     if (entry.secondaryTypes && entry.secondaryTypes.length > 0) {
       frontmatter.secondaryTypes = entry.secondaryTypes.filter((t) => t !== entry.type);
+    }
+    if (entry.relationships && entry.relationships.length > 0) {
+      frontmatter.relationships = entry.relationships;
     }
     if (entry.coverAssetId) frontmatter.coverAssetId = entry.coverAssetId;
     if (entry.portraitAssetId) frontmatter.portraitAssetId = entry.portraitAssetId;
@@ -385,6 +402,7 @@ export class WorkspaceStore {
       slug,
       type: entryType,
       secondaryTypes: (input.secondaryTypes ?? []).filter((t) => t !== entryType),
+      relationships: input.relationships ?? [],
       folder,
       relativePath,
       tags: input.tags ?? [],
@@ -445,6 +463,8 @@ export class WorkspaceStore {
       relativePath: nextRelativePath,
       type: nextType,
       secondaryTypes: Array.from(new Set(nextSecondaryTypes)),
+      relationships:
+        input.relationships !== undefined ? input.relationships : existing.relationships ?? [],
       tags: input.tags ?? existing.tags,
       properties: input.properties ?? existing.properties,
       coverAssetId:

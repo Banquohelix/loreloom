@@ -82,6 +82,12 @@ export interface ArtAsset {
 
 export type EntryPropertyValue = string | string[] | number | boolean;
 
+export interface EntryRelationship {
+  id: string;
+  targetId: string;
+  label: string;
+}
+
 export interface EntrySummary {
   id: string;
   worldSlug: string;
@@ -89,6 +95,7 @@ export interface EntrySummary {
   slug: string;
   type: string;
   secondaryTypes?: string[];
+  relationships?: EntryRelationship[];
   folder: string;
   relativePath: string;
   tags: string[];
@@ -121,6 +128,7 @@ export interface GraphNode {
 export interface GraphEdge {
   sourceId: string;
   targetId: string;
+  label?: string;
 }
 
 export interface WorldGraph {
@@ -256,6 +264,7 @@ export interface CreateEntryInput {
   title: string;
   type?: string;
   secondaryTypes?: string[];
+  relationships?: EntryRelationship[];
   folder?: string;
   body?: string;
   tags?: string[];
@@ -270,6 +279,7 @@ export interface UpdateEntryInput {
   title?: string;
   type?: string;
   secondaryTypes?: string[];
+  relationships?: EntryRelationship[];
   folder?: string;
   body?: string;
   tags?: string[];

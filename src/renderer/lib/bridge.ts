@@ -199,6 +199,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
           title: input.title ?? e.title,
           type: input.type ?? e.type,
           secondaryTypes: input.secondaryTypes ?? e.secondaryTypes,
+          relationships: input.relationships ?? e.relationships,
           folder: input.folder ?? e.folder,
           tags: input.tags ?? e.tags,
           properties: input.properties ?? e.properties,
