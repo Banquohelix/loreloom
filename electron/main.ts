@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -19,7 +19,7 @@ import {
   findDuplicateGroups,
   mergeDuplicateEntries,
 } from '../src/core/world-hygiene';
-import { buildWorldBibleHtml } from '../src/core/bible-exporter';
+import { writeWorldBibleHtmlFile } from '../src/core/bible-exporter';
 import { generateWorldPromptFramework } from '../src/shared/prompt-framework';
 import type {
   ArtCategory,
@@ -81,6 +81,45 @@ async function readAppSettings(): Promise<AppSettings> {
 async function writeAppSettings(settings: AppSettings): Promise<void> {
   await fs.mkdir(path.dirname(getSettingsPath()), { recursive: true });
   await fs.writeFile(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function bitmapHasTransparency(bgra: Buffer): boolean {
+  for (let i = 3; i < bgra.length; i += 4) {
+    if (bgra[i] < 255) return true;
+  }
+  return false;
+}
+
+/**
+ * Downscales art for World Bible exports (JPEG, or PNG when the image has transparency).
+ * Formats nativeImage can't decode (webp/avif/gif) are embedded as-is.
+ */
+async function encodeImageForExport(absPath: string, maxDimension: number): Promise<string | null> {
+  const buf = await fs.readFile(absPath);
+  const ext = path.extname(absPath).toLowerCase();
+  const original = () => {
+    const mime =
+      ext === '.webp' ? 'image/webp' : ext === '.avif' ? 'image/avif' : ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  };
+  if (ext === '.gif') return original();
+
+  let img = nativeImage.createFromBuffer(buf);
+  if (img.isEmpty()) return original();
+  const { width, height } = img.getSize();
+  const scale = Math.min(1, maxDimension / Math.max(width, height, 1));
+  if (scale < 1) {
+    img = img.resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    });
+  }
+  const transparent = ext === '.png' && bitmapHasTransparency(img.toBitmap());
+  const encoded = transparent ? img.toPNG() : img.toJPEG(82);
+  // Already within the size cap and the original is smaller: keep the original bytes
+  if (scale === 1 && buf.length <= encoded.length) return original();
+  return `data:image/${transparent ? 'png' : 'jpeg'};base64,${encoded.toString('base64')}`;
 }
 
 function requireStore(): WorkspaceStore {
@@ -434,15 +473,17 @@ function registerIpcHandlers(): void {
     });
     if (saveRes.canceled || !saveRes.filePath) return null;
 
-    const rendered = await buildWorldBibleHtml(s, world, options);
-
+    // Streamed to disk with downscaled art: building one in-memory string overflowed
+    // V8's max string length ("RangeError: Invalid string length") on art-heavy Worlds.
+    let rendered: { entryCount: number; artCount: number };
     if (options.format === 'html') {
-      await fs.writeFile(saveRes.filePath, rendered.html, 'utf8');
+      rendered = await writeWorldBibleHtmlFile(s, world, options, saveRes.filePath, encodeImageForExport);
     } else {
       const tempHtmlPath = path.join(os.tmpdir(), `loreloom-bible-${Date.now()}.html`);
-      await fs.writeFile(tempHtmlPath, rendered.html, 'utf8');
-      const win = new BrowserWindow({ show: false, width: 1000, height: 1200 });
+      let win: BrowserWindow | null = null;
       try {
+        rendered = await writeWorldBibleHtmlFile(s, world, options, tempHtmlPath, encodeImageForExport);
+        win = new BrowserWindow({ show: false, width: 1000, height: 1200 });
         await win.loadFile(tempHtmlPath);
         const pdfBuffer = await win.webContents.printToPDF({
           printBackground: true,
@@ -450,7 +491,7 @@ function registerIpcHandlers(): void {
         });
         await fs.writeFile(saveRes.filePath, pdfBuffer);
       } finally {
-        win.destroy();
+        win?.destroy();
         await fs.unlink(tempHtmlPath).catch(() => {});
       }
     }
