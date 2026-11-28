@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { LEGACY_MANIFEST_FILES, WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
+import { startLoreloomMcpServer, generateMcpToken, type RunningMcpServer } from './mcp-server';
+import type { McpChange } from '../src/core/mcp-tools';
 import { IndexEngine, extractPropertyLinks, extractWikilinks, rewritePropertyLinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
@@ -72,7 +74,23 @@ interface AppSettings {
   githubUpdateToken?: string;
   /** GitHub token encrypted with Electron safeStorage (Windows DPAPI), base64. */
   githubUpdateTokenEnc?: string;
+  /** AI assistant access over MCP (off until the user turns it on). */
+  mcp?: Partial<McpSettings>;
+  /** MCP bearer token encrypted with safeStorage, base64 (plain `mcpToken` only if encryption is unavailable). */
+  mcpTokenEnc?: string;
+  mcpToken?: string;
 }
+
+interface McpSettings {
+  enabled: boolean;
+  port: number;
+  /** Assistants may create and change entries, art and maps. */
+  allowWrites: boolean;
+  /** Tag AI-created entries and art `needs-triage` for review. */
+  markDrafts: boolean;
+}
+
+const MCP_DEFAULTS: McpSettings = { enabled: false, port: 47833, allowWrites: true, markDrafts: true };
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -191,6 +209,104 @@ async function setUpdateToken(token: string | null): Promise<void> {
     }
   }
   await writeAppSettings(updated);
+}
+
+// ---------------------------------------------------------------------------------------------
+// AI assistants (MCP)
+
+let mcpRunning: RunningMcpServer | null = null;
+let mcpError: string | null = null;
+
+async function getMcpSettings(): Promise<McpSettings> {
+  const settings = await readAppSettings();
+  return { ...MCP_DEFAULTS, ...(settings.mcp ?? {}) };
+}
+
+/** The bearer token assistants use; created on first use and stored encrypted. */
+async function getMcpToken(regenerate = false): Promise<string> {
+  const settings = await readAppSettings();
+  if (!regenerate) {
+    if (settings.mcpTokenEnc && safeStorage.isEncryptionAvailable()) {
+      try {
+        return safeStorage.decryptString(Buffer.from(settings.mcpTokenEnc, 'base64'));
+      } catch {
+        // Unreadable (e.g. copied settings from another PC): make a new one below
+      }
+    } else if (settings.mcpToken) {
+      return settings.mcpToken;
+    }
+  }
+  const token = generateMcpToken();
+  const updated: AppSettings = { ...settings };
+  delete updated.mcpToken;
+  delete updated.mcpTokenEnc;
+  if (safeStorage.isEncryptionAvailable()) updated.mcpTokenEnc = safeStorage.encryptString(token).toString('base64');
+  else updated.mcpToken = token;
+  await writeAppSettings(updated);
+  return token;
+}
+
+function mcpBridgePath(): string {
+  return path.join(app.getPath('userData'), 'mcp', 'loreloom-mcp-bridge.js');
+}
+
+/** Copies the stdio bridge out of the app bundle to a stable path that survives updates. */
+async function installMcpBridge(): Promise<void> {
+  const source = await fs.readFile(path.join(__dirname, 'mcp-bridge.js'), 'utf8');
+  const dest = mcpBridgePath();
+  const current = await fs.readFile(dest, 'utf8').catch(() => null);
+  if (current === source) return;
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.writeFile(dest, source, 'utf8');
+}
+
+/** Starts or stops the MCP endpoint to match the saved settings. */
+async function applyMcpSettings(): Promise<void> {
+  if (mcpRunning) {
+    await mcpRunning.close().catch(() => {});
+    mcpRunning = null;
+  }
+  mcpError = null;
+  const settings = await getMcpSettings();
+  if (!settings.enabled) return;
+  try {
+    await installMcpBridge().catch(() => {});
+    mcpRunning = await startLoreloomMcpServer({
+      port: settings.port,
+      token: await getMcpToken(),
+      version: app.getVersion(),
+      context: (clientName) =>
+        store && indexEngine
+          ? {
+              store,
+              index: indexEngine,
+              allowWrites: settings.allowWrites,
+              markDrafts: settings.markDrafts,
+              clientName,
+              onChange: (change: McpChange) => {
+                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mcp:activity', change);
+              },
+            }
+          : null,
+    });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    mcpError = code === 'EADDRINUSE' ? `Port ${settings.port} is already in use. Pick another port.` : (err as Error).message;
+  }
+}
+
+async function getMcpStatus() {
+  const settings = await getMcpSettings();
+  return {
+    ...settings,
+    running: Boolean(mcpRunning),
+    url: `http://127.0.0.1:${settings.port}/mcp`,
+    error: mcpError,
+    token: await getMcpToken(),
+    bridgePath: mcpBridgePath(),
+    execPath: process.execPath,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+  };
 }
 
 async function downloadReleaseAsset(apiUrl: string, token: string | null): Promise<Buffer> {
@@ -536,6 +652,27 @@ async function refreshIntakeWatchers(): Promise<void> {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('mcp:get-status', () => getMcpStatus());
+  ipcMain.handle('mcp:update-settings', async (_e, patch: Partial<McpSettings>) => {
+    const settings = await readAppSettings();
+    const current = { ...MCP_DEFAULTS, ...(settings.mcp ?? {}) };
+    const next: McpSettings = {
+      enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
+      allowWrites: typeof patch.allowWrites === 'boolean' ? patch.allowWrites : current.allowWrites,
+      markDrafts: typeof patch.markDrafts === 'boolean' ? patch.markDrafts : current.markDrafts,
+      port:
+        Number.isInteger(patch.port) && Number(patch.port) >= 1024 && Number(patch.port) <= 65535 ? Number(patch.port) : current.port,
+    };
+    await writeAppSettings({ ...settings, mcp: next });
+    await applyMcpSettings();
+    return getMcpStatus();
+  });
+  ipcMain.handle('mcp:regenerate-token', async () => {
+    await getMcpToken(true);
+    await applyMcpSettings();
+    return getMcpStatus();
+  });
+
   ipcMain.handle('workspace:get-saved-path', async () => {
     const settings = await readAppSettings();
     return settings.workspacePath ?? null;
@@ -1145,6 +1282,7 @@ app.whenReady().then(() => {
 
   registerIpcHandlers();
   createWindow();
+  void applyMcpSettings();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1152,6 +1290,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', async () => {
+  if (mcpRunning) await mcpRunning.close().catch(() => {});
   if (watcher) await watcher.close();
   for (const w of intakeWatchers.values()) await w.close();
   if (indexEngine) indexEngine.close();

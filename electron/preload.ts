@@ -74,6 +74,14 @@ const bridge: DesktopBridge = {
   reassignEntryId: (worldSlug, relativePath) =>
     ipcRenderer.invoke('hygiene:reassign-id', worldSlug, relativePath),
   findArtLinkSuggestions: (worldSlug) => ipcRenderer.invoke('hygiene:art-suggestions', worldSlug),
+  getMcpStatus: () => ipcRenderer.invoke('mcp:get-status'),
+  updateMcpSettings: (patch) => ipcRenderer.invoke('mcp:update-settings', patch),
+  regenerateMcpToken: () => ipcRenderer.invoke('mcp:regenerate-token'),
+  onMcpActivity: (cb) => {
+    const handler = (_e: unknown, activity: Parameters<typeof cb>[0]) => cb(activity);
+    ipcRenderer.on('mcp:activity', handler);
+    return () => ipcRenderer.removeListener('mcp:activity', handler);
+  },
   listTrash: (worldSlug) => ipcRenderer.invoke('trash:list', worldSlug),
   restoreTrashItem: (worldSlug, itemId) => ipcRenderer.invoke('trash:restore', worldSlug, itemId),
   deleteTrashItemForever: (worldSlug, itemId) => ipcRenderer.invoke('trash:delete-forever', worldSlug, itemId),

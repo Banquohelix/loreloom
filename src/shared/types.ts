@@ -326,6 +326,31 @@ export interface ArtQuery {
   tag?: string;
 }
 
+export interface McpStatus {
+  enabled: boolean;
+  port: number;
+  allowWrites: boolean;
+  markDrafts: boolean;
+  running: boolean;
+  url: string;
+  error: string | null;
+  token: string;
+  /** Stdio bridge for Claude Desktop, copied to a stable path */
+  bridgePath: string;
+  /** This app's executable (runs the bridge with ELECTRON_RUN_AS_NODE=1) */
+  execPath: string;
+  /** Portable builds run from a temporary folder, so their path changes between launches */
+  portable: boolean;
+}
+
+export interface McpActivity {
+  worldSlug: string;
+  kind: 'entry' | 'art' | 'map';
+  action: string;
+  title: string;
+  client?: string;
+}
+
 export type TrashKind = 'entry' | 'art' | 'map' | 'board' | 'type';
 
 /** Something deleted from a World and kept in `<world>/.trash/` so it can be restored. */
@@ -478,6 +503,10 @@ export interface DesktopBridge {
     removeEntryIds: string[]
   ) => Promise<Entry>;
   findDuplicateIds: (worldSlug: string) => Promise<DuplicateIdConflict[]>;
+  getMcpStatus: () => Promise<McpStatus>;
+  updateMcpSettings: (patch: Partial<Pick<McpStatus, 'enabled' | 'port' | 'allowWrites' | 'markDrafts'>>) => Promise<McpStatus>;
+  regenerateMcpToken: () => Promise<McpStatus>;
+  onMcpActivity: (cb: (activity: McpActivity) => void) => () => void;
   listTrash: (worldSlug: string) => Promise<TrashItem[]>;
   restoreTrashItem: (worldSlug: string, itemId: string) => Promise<TrashRestoreResult>;
   deleteTrashItemForever: (worldSlug: string, itemId: string) => Promise<void>;
