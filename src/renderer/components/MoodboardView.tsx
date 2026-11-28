@@ -84,6 +84,11 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
   };
 
   const handleDeleteBoard = async (boardId: string) => {
+    const board = boards.find((b) => b.id === boardId);
+    const ok = window.confirm(
+      `Delete the moodboard "${board?.title ?? 'Untitled'}"?\n\nImages stay in Concept Art. A copy of the board is kept in this World's .trash/boards folder.`
+    );
+    if (!ok) return;
     await bridge.deleteBoard(world.slug, boardId);
     const remaining = boards.filter((b) => b.id !== boardId);
     setBoards(remaining);

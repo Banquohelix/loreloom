@@ -78,6 +78,8 @@ export interface ArtAsset {
   tags: string[];
   caption: string;
   createdAt: string;
+  /** Transient (never persisted): the manifest record exists but the file has not synced/arrived yet. */
+  missing?: boolean;
 }
 
 export type EntryPropertyValue = string | string[] | number | boolean;
@@ -109,6 +111,14 @@ export interface EntrySummary {
 export interface Entry extends EntrySummary {
   body: string;
   createdAt: string;
+  /** Frontmatter keys Loreloom does not manage (aliases, cssclasses, custom keys); preserved verbatim on save. */
+  extraFrontmatter?: Record<string, unknown>;
+}
+
+/** Returned from updateEntry. When `conflictCopy` is set, the entry changed on disk (e.g. another PC)
+ * since the editor loaded it: the on-disk version was kept and the incoming edit saved as a copy. */
+export interface UpdateEntryResult extends Entry {
+  conflictCopy?: { id: string; title: string };
 }
 
 export interface BacklinkRef {
@@ -286,6 +296,8 @@ export interface UpdateEntryInput {
   properties?: Record<string, EntryPropertyValue>;
   coverAssetId?: string | null;
   portraitAssetId?: string | null;
+  /** Body the editor last loaded/saved. If the file's body differs, the save is forked into a conflict copy. */
+  baseBody?: string;
 }
 
 export interface CollectionQuery {
@@ -368,7 +380,7 @@ export interface DesktopBridge {
   listEntries: (query: CollectionQuery) => Promise<EntrySummary[]>;
   readEntry: (worldSlug: string, id: string) => Promise<Entry | null>;
   createEntry: (input: CreateEntryInput) => Promise<Entry>;
-  updateEntry: (input: UpdateEntryInput) => Promise<Entry>;
+  updateEntry: (input: UpdateEntryInput) => Promise<UpdateEntryResult>;
   deleteEntry: (worldSlug: string, id: string) => Promise<void>;
   getBacklinks: (worldSlug: string, entryId: string) => Promise<BacklinkRef[]>;
   getWorldGraph: (worldSlug: string) => Promise<WorldGraph>;
@@ -437,6 +449,8 @@ export interface DesktopBridge {
   reclassifyTriageItems: (worldSlug: string) => Promise<ReclassifyTriageReport>;
   exportWorldPromptFramework: (worldSlug: string) => Promise<string>;
   onIntakeSynced: (cb: (report: IntakeSyncReport) => void) => () => void;
+  /** Main asks the renderer to flush pending saves before the window closes; call the returned ack when done. */
+  onBeforeClose: (cb: () => Promise<void>) => () => void;
 
   // In-App Update Checker
   getAppVersion: () => Promise<string>;

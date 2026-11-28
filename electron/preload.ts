@@ -88,6 +88,16 @@ const bridge: DesktopBridge = {
     return () => ipcRenderer.removeListener('intake:synced', listener);
   },
 
+  onBeforeClose: (cb) => {
+    const listener = () => {
+      cb()
+        .catch(() => {})
+        .finally(() => ipcRenderer.invoke('app:close-ready'));
+    };
+    ipcRenderer.on('app:before-close', listener);
+    return () => ipcRenderer.removeListener('app:before-close', listener);
+  },
+
   getAppVersion: () => ipcRenderer.invoke('update:get-version'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadAndInstallUpdate: (installerApiUrl, filename) =>

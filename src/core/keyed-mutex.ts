@@ -1,0 +1,24 @@
+/**
+ * Serializes async work per key (e.g. one Entry file, one World's art manifest) so concurrent
+ * read-modify-write operations cannot interleave and drop each other's changes.
+ */
+export class KeyedMutex {
+  private tails = new Map<string, Promise<void>>();
+
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prev.then(() => gate);
+    this.tails.set(key, tail);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    }
+  }
+}

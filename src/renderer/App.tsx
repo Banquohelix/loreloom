@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeftRight, Sparkles, X } from 'lucide-react';
 import {
   NEEDS_TRIAGE_TAG,
@@ -10,6 +10,7 @@ import {
   type EntrySummary,
   type StudioAppearance,
   type UpdateCheckResult,
+  type UpdateEntryResult,
   type WorldConfig,
   type WorldTheme,
   type WorkspaceState,
@@ -21,11 +22,12 @@ import {
 } from '@shared/tab-utils';
 import { resolveWorldTokens } from '@core/theme-engine';
 import { getBridge } from './lib/bridge';
+import { flushAllPendingSaves } from './lib/pending-saves';
 import { SetupWorkspaceView } from './components/SetupWorkspaceView';
 import { Sidebar, type ActiveView } from './components/Sidebar';
 import { WorkspaceTabBar } from './components/WorkspaceTabBar';
 import { WorldOverview } from './components/WorldOverview';
-import { EntryEditor } from './components/EntryEditor';
+import { EntryEditor, type EntrySavePatch } from './components/EntryEditor';
 import { EntryInspector } from './components/EntryInspector';
 import { CollectionView } from './components/CollectionView';
 import { ArtGalleryView } from './components/ArtGalleryView';
@@ -86,6 +88,16 @@ export default function App() {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((message: string, ms = 5000) => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToastMessage(message);
+    toastTimerRef.current = window.setTimeout(() => setToastMessage(null), ms);
+  }, []);
+  const saveQueueRef = useRef(new Map<string, Promise<UpdateEntryResult | null>>());
+  const currentEntryRef = useRef<Entry | null>(null);
+  const splitEntryRef = useRef<Entry | null>(null);
+  const activeWorldSlugRef = useRef<string | null>(null);
   const [appVersion, setAppVersion] = useState('0.3.0');
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
@@ -102,6 +114,10 @@ export default function App() {
     if (!workspace || !activeWorldSlug) return null;
     return workspace.worlds.find((w) => w.slug === activeWorldSlug) ?? null;
   }, [workspace, activeWorldSlug]);
+
+  currentEntryRef.current = currentEntry;
+  splitEntryRef.current = splitEntry;
+  activeWorldSlugRef.current = activeWorldSlug;
 
   // Apply light/dark class on root
   useEffect(() => {
@@ -230,6 +246,29 @@ export default function App() {
     };
   }, [activeWorldSlug, splitView, bridge]);
 
+  // Re-read open entries so edits synced from another PC (or intake) reach the editor.
+  // The editor only applies them when it has no unsaved local edits.
+  const reloadOpenEntries = useCallback(
+    async (worldSlug: string) => {
+      const reload = async (prev: Entry | null, set: (e: Entry) => void) => {
+        if (!prev || prev.worldSlug !== worldSlug) return;
+        const fresh = await bridge.readEntry(worldSlug, prev.id).catch(() => null);
+        if (fresh && (fresh.body !== prev.body || fresh.title !== prev.title || fresh.updatedAt !== prev.updatedAt)) {
+          set(fresh);
+        }
+      };
+      await Promise.all([
+        reload(currentEntryRef.current, (fresh) =>
+          setCurrentEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+        ),
+        reload(splitEntryRef.current, (fresh) =>
+          setSplitEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+        ),
+      ]);
+    },
+    [bridge]
+  );
+
   // Live refresh when OneDrive/Google Drive syncs external file changes
   useEffect(() => {
     return bridge.onWorkspaceChanged(async (evt) => {
@@ -239,15 +278,20 @@ export default function App() {
       }
       if (activeWorldSlug && (!evt.worldSlug || evt.worldSlug === activeWorldSlug)) {
         await refreshWorldData(activeWorldSlug);
+        if (evt.kind === 'entry') await reloadOpenEntries(activeWorldSlug);
       }
     });
-  }, [bridge, workspace, activeWorldSlug, refreshWorldData]);
+  }, [bridge, workspace, activeWorldSlug, refreshWorldData, reloadOpenEntries]);
+
+  // Flush debounced editor saves before the window closes
+  useEffect(() => bridge.onBeforeClose(() => flushAllPendingSaves()), [bridge]);
 
   // Live notification & refresh when a World's Intake Folder syncs new AI notes/art
   useEffect(() => {
     return bridge.onIntakeSynced(async (report) => {
       if (activeWorldSlug && report.worldSlug === activeWorldSlug) {
         await refreshWorldData(activeWorldSlug);
+        await reloadOpenEntries(activeWorldSlug);
       }
       const parts: string[] = [];
       if (report.importedEntries > 0) parts.push(`${report.importedEntries} new lore`);
@@ -258,7 +302,7 @@ export default function App() {
         window.setTimeout(() => setToastMessage(null), 5000);
       }
     });
-  }, [bridge, activeWorldSlug, refreshWorldData]);
+  }, [bridge, activeWorldSlug, refreshWorldData, reloadOpenEntries]);
 
   const handleSelectWorld = async (slug: string) => {
     setActiveWorldSlug(slug);
@@ -322,39 +366,54 @@ export default function App() {
     setActiveView({ kind: 'entry', entryId: created.id });
   };
 
-  const handleUpdateCurrentEntry = async (
-    patch: Parameters<typeof bridge.updateEntry>[0] extends infer P
-      ? Omit<P, 'worldSlug' | 'id'>
-      : never
-  ) => {
-    if (!activeWorld || !currentEntry) return;
-    const updated = await bridge.updateEntry({
-      worldSlug: activeWorld.slug,
-      id: currentEntry.id,
-      ...patch,
-    });
-    setCurrentEntry(updated);
-    await refreshWorldData(activeWorld.slug);
-    const bl = await bridge.getBacklinks(activeWorld.slug, updated.id);
-    setBacklinks(bl);
-  };
+  /**
+   * Saves a patch to a specific entry. Saves to the same entry are queued so they never interleave,
+   * and the reply only updates panes that still show that entry (no jumping back to a stale page).
+   */
+  const updateEntryById = useCallback(
+    (worldSlug: string, entryId: string, patch: EntrySavePatch): Promise<UpdateEntryResult | null> => {
+      const queue = saveQueueRef.current;
+      const key = `${worldSlug}:${entryId}`;
+      const previous = queue.get(key) ?? Promise.resolve(null);
+      const run = previous
+        .catch(() => null)
+        .then(async () => {
+          try {
+            const updated = await bridge.updateEntry({ worldSlug, id: entryId, ...patch });
+            const { conflictCopy, ...entry } = updated;
+            setCurrentEntry((cur) => (cur && cur.id === entry.id ? entry : cur));
+            setSplitEntry((cur) => (cur && cur.id === entry.id ? entry : cur));
+            if (conflictCopy) {
+              showToast(
+                `"${entry.title}" changed on another device. Your edit was saved as "${conflictCopy.title}".`,
+                9000
+              );
+            }
+            if (activeWorldSlugRef.current === worldSlug) {
+              await refreshWorldData(worldSlug);
+              if (currentEntryRef.current?.id === entryId) {
+                const bl = await bridge.getBacklinks(worldSlug, entryId);
+                if (currentEntryRef.current?.id === entryId) setBacklinks(bl);
+              }
+            }
+            return updated;
+          } catch (err) {
+            showToast(`Could not save: ${(err as Error).message}`, 9000);
+            return null;
+          }
+        });
+      queue.set(key, run);
+      run.finally(() => {
+        if (queue.get(key) === run) queue.delete(key);
+      });
+      return run;
+    },
+    [bridge, refreshWorldData]
+  );
 
-  const handleUpdateSplitEntry = async (
-    patch: Parameters<typeof bridge.updateEntry>[0] extends infer P
-      ? Omit<P, 'worldSlug' | 'id'>
-      : never
-  ) => {
-    if (!activeWorld || !splitEntry) return;
-    const updated = await bridge.updateEntry({
-      worldSlug: activeWorld.slug,
-      id: splitEntry.id,
-      ...patch,
-    });
-    setSplitEntry(updated);
-    if (currentEntry && currentEntry.id === updated.id) {
-      setCurrentEntry(updated);
-    }
-    await refreshWorldData(activeWorld.slug);
+  const handleUpdateCurrentEntry = async (patch: EntrySavePatch) => {
+    if (!currentEntry) return;
+    await updateEntryById(currentEntry.worldSlug, currentEntry.id, patch);
   };
 
   const handleCloseTab = (tabId: string) => {
@@ -387,6 +446,10 @@ export default function App() {
 
   const handleDeleteCurrentEntry = async () => {
     if (!activeWorld || !currentEntry) return;
+    const ok = window.confirm(
+      `Delete "${currentEntry.title}"?\n\nThe file is moved to this World's .trash/entries folder, so it can be restored from there.`
+    );
+    if (!ok) return;
     await bridge.deleteEntry(activeWorld.slug, currentEntry.id);
     await refreshWorldData(activeWorld.slug);
     setActiveView({ kind: 'overview' });
@@ -611,13 +674,16 @@ export default function App() {
               ) : activeView.kind === 'entry' && currentEntry ? (
                 <>
                   <EntryEditor
+                    key={`primary-${currentEntry.id}`}
                     world={activeWorld}
                     entry={currentEntry}
                     allEntries={entries}
                     artAssets={artAssets}
                     inspectorOpen={inspectorOpen && !splitView}
                     onToggleInspector={() => setInspectorOpen((v) => !v)}
-                    onSaveEntry={handleUpdateCurrentEntry}
+                    onSaveEntry={(patch) =>
+                      updateEntryById(currentEntry.worldSlug, currentEntry.id, patch)
+                    }
                     onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
                     onCreateStubEntry={handleCreateStubEntry}
                   />
@@ -770,13 +836,16 @@ export default function App() {
                     })()
                   ) : splitView.kind === 'entry' && splitEntry ? (
                     <EntryEditor
+                      key={`split-${splitEntry.id}`}
                       world={activeWorld}
                       entry={splitEntry}
                       allEntries={entries}
                       artAssets={artAssets}
                       inspectorOpen={false}
                       onToggleInspector={() => {}}
-                      onSaveEntry={handleUpdateSplitEntry}
+                      onSaveEntry={(patch) =>
+                        updateEntryById(splitEntry.worldSlug, splitEntry.id, patch)
+                      }
                       onNavigateEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
                       onCreateStubEntry={handleCreateStubEntry}
                     />

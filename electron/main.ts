@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,13 +12,14 @@ import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
+import { KeyedMutex } from '../src/core/keyed-mutex';
 import { checkLatestGitHubRelease } from '../src/core/update-checker';
 import {
   findArtLinkSuggestions,
   findDuplicateGroups,
   mergeDuplicateEntries,
 } from '../src/core/world-hygiene';
-import { buildWorldBibleHtml } from '../src/core/bible-exporter';
+import { writeWorldBibleHtmlFile } from '../src/core/bible-exporter';
 import { generateWorldPromptFramework } from '../src/shared/prompt-framework';
 import type {
   ArtCategory,
@@ -49,6 +50,10 @@ let watcher: FSWatcher | null = null;
 const intakeWatchers = new Map<string, FSWatcher>();
 const importer = new ObsidianImporter();
 const intakeEngine = new IntakeEngine();
+/** One intake sync per World at a time (launch catch-up, watcher, and manual runs used to race). */
+const intakeLocks = new KeyedMutex();
+let closeAfterFlush = false;
+const wikilinkRepairDone = new Set<string>();
 
 interface AppSettings {
   workspacePath?: string;
@@ -76,6 +81,45 @@ async function readAppSettings(): Promise<AppSettings> {
 async function writeAppSettings(settings: AppSettings): Promise<void> {
   await fs.mkdir(path.dirname(getSettingsPath()), { recursive: true });
   await fs.writeFile(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+}
+
+function bitmapHasTransparency(bgra: Buffer): boolean {
+  for (let i = 3; i < bgra.length; i += 4) {
+    if (bgra[i] < 255) return true;
+  }
+  return false;
+}
+
+/**
+ * Downscales art for World Bible exports (JPEG, or PNG when the image has transparency).
+ * Formats nativeImage can't decode (webp/avif/gif) are embedded as-is.
+ */
+async function encodeImageForExport(absPath: string, maxDimension: number): Promise<string | null> {
+  const buf = await fs.readFile(absPath);
+  const ext = path.extname(absPath).toLowerCase();
+  const original = () => {
+    const mime =
+      ext === '.webp' ? 'image/webp' : ext === '.avif' ? 'image/avif' : ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  };
+  if (ext === '.gif') return original();
+
+  let img = nativeImage.createFromBuffer(buf);
+  if (img.isEmpty()) return original();
+  const { width, height } = img.getSize();
+  const scale = Math.min(1, maxDimension / Math.max(width, height, 1));
+  if (scale < 1) {
+    img = img.resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    });
+  }
+  const transparent = ext === '.png' && bitmapHasTransparency(img.toBitmap());
+  const encoded = transparent ? img.toPNG() : img.toJPEG(82);
+  // Already within the size cap and the original is smaller: keep the original bytes
+  if (scale === 1 && buf.length <= encoded.length) return original();
+  return `data:image/${transparent ? 'png' : 'jpeg'};base64,${encoded.toString('base64')}`;
 }
 
 function requireStore(): WorkspaceStore {
@@ -135,6 +179,10 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
 }
 
 async function runWorldIntakeSyncAndNotify(worldSlug: string): Promise<IntakeSyncReport> {
+  return intakeLocks.run(`intake:${worldSlug}`, () => runWorldIntakeSyncUnlocked(worldSlug));
+}
+
+async function runWorldIntakeSyncUnlocked(worldSlug: string): Promise<IntakeSyncReport> {
   const s = requireStore();
   const idx = requireIndex();
   const settings = await readAppSettings();
@@ -217,6 +265,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('workspace:open', async (_e, rootPath: string) => {
     store = new WorkspaceStore(rootPath);
     const state = await store.ensureInitialized();
+
+    // Repair `\[\[wikilinks\]\]` escaped by the <= 0.6.5 editor before indexing or intake runs
+    if (!wikilinkRepairDone.has(rootPath)) {
+      wikilinkRepairDone.add(rootPath);
+      for (const world of state.worlds) {
+        await store.repairEscapedWikilinksInWorld(world.slug).catch(() => 0);
+      }
+    }
     const existingSettings = await readAppSettings();
     await writeAppSettings({ ...existingSettings, workspacePath: rootPath });
 
@@ -288,10 +344,15 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('entry:update', async (_e, input: UpdateEntryInput) => {
-    const updated = await requireStore().updateEntry(input);
-    const worlds = await requireStore().listWorlds();
+    const s = requireStore();
+    const updated = await s.updateEntry(input);
+    const worlds = await s.listWorlds();
     const world = worlds.find((w) => w.slug === input.worldSlug);
     requireIndex().upsertEntry(updated, world);
+    if (updated.conflictCopy) {
+      const copy = await s.readEntryById(input.worldSlug, updated.conflictCopy.id);
+      if (copy) requireIndex().upsertEntry(copy, world);
+    }
     return updated;
   });
 
@@ -412,15 +473,17 @@ function registerIpcHandlers(): void {
     });
     if (saveRes.canceled || !saveRes.filePath) return null;
 
-    const rendered = await buildWorldBibleHtml(s, world, options);
-
+    // Streamed to disk with downscaled art: building one in-memory string overflowed
+    // V8's max string length ("RangeError: Invalid string length") on art-heavy Worlds.
+    let rendered: { entryCount: number; artCount: number };
     if (options.format === 'html') {
-      await fs.writeFile(saveRes.filePath, rendered.html, 'utf8');
+      rendered = await writeWorldBibleHtmlFile(s, world, options, saveRes.filePath, encodeImageForExport);
     } else {
       const tempHtmlPath = path.join(os.tmpdir(), `loreloom-bible-${Date.now()}.html`);
-      await fs.writeFile(tempHtmlPath, rendered.html, 'utf8');
-      const win = new BrowserWindow({ show: false, width: 1000, height: 1200 });
+      let win: BrowserWindow | null = null;
       try {
+        rendered = await writeWorldBibleHtmlFile(s, world, options, tempHtmlPath, encodeImageForExport);
+        win = new BrowserWindow({ show: false, width: 1000, height: 1200 });
         await win.loadFile(tempHtmlPath);
         const pdfBuffer = await win.webContents.printToPDF({
           printBackground: true,
@@ -428,7 +491,7 @@ function registerIpcHandlers(): void {
         });
         await fs.writeFile(saveRes.filePath, pdfBuffer);
       } finally {
-        win.destroy();
+        win?.destroy();
         await fs.unlink(tempHtmlPath).catch(() => {});
       }
     }
@@ -616,6 +679,11 @@ function registerIpcHandlers(): void {
     setTimeout(() => app.quit(), 400);
   });
 
+  ipcMain.handle('app:close-ready', async () => {
+    closeAfterFlush = true;
+    mainWindow?.close();
+  });
+
   ipcMain.handle('shell:open-external', async (_e, url: string) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
       await shell.openExternal(url);
@@ -639,6 +707,36 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  // Never let a dropped file or clicked link replace the app (and lose unsaved edits)
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL();
+    if (url !== current) {
+      event.preventDefault();
+      if (url.startsWith('https://') || url.startsWith('http://')) {
+        shell.openExternal(url).catch(() => {});
+      }
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      shell.openExternal(url).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
+
+  // Ask the renderer to flush debounced saves before closing; force-close after a timeout
+  mainWindow.on('close', (event) => {
+    if (closeAfterFlush || !mainWindow || mainWindow.webContents.isDestroyed()) return;
+    event.preventDefault();
+    mainWindow.webContents.send('app:before-close');
+    setTimeout(() => {
+      if (!closeAfterFlush) {
+        closeAfterFlush = true;
+        mainWindow?.close();
+      }
+    }, 4000);
   });
 
   mainWindow.once('ready-to-show', () => {

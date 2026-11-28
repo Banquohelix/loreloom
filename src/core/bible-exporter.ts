@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { marked } from 'marked';
 import { resolveWorldTokens } from './theme-engine';
 import type { WorkspaceStore } from './workspace-store';
 import type {
-  ArtAsset,
   Entry,
   ExportWorldBibleOptions,
   WorldConfig,
@@ -18,6 +18,14 @@ function escapeHtml(input: string): string {
     .replace(/"/g, '&quot;');
 }
 
+function decodeAssetRel(rel: string): string {
+  try {
+    return decodeURIComponent(rel);
+  } catch {
+    return rel;
+  }
+}
+
 function mimeFromExt(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
@@ -27,25 +35,34 @@ function mimeFromExt(filename: string): string {
   return 'image/png';
 }
 
-async function assetToDataUri(
-  store: WorkspaceStore,
-  worldSlug: string,
-  asset: ArtAsset
-): Promise<string | null> {
-  try {
-    const abs = store.resolveAssetAbsolutePath(worldSlug, asset.relativePath);
-    const buf = await fs.readFile(abs);
-    return `data:${mimeFromExt(asset.filename)};base64,${buf.toString('base64')}`;
-  } catch {
-    return null;
-  }
-}
+/**
+ * Turns an image file into a data URI no larger than `maxDimension` px on its longest side.
+ * The Electron main process supplies a real resizer (nativeImage); the default embeds the
+ * original bytes (used by tests and when no resizer is available).
+ */
+export type ImageEncoder = (absPath: string, maxDimension: number) => Promise<string | null>;
+
+const embedOriginal: ImageEncoder = async (absPath) => {
+  const buf = await fs.readFile(absPath);
+  return `data:${mimeFromExt(absPath)};base64,${buf.toString('base64')}`;
+};
+
+/** Longest-side pixel caps per use: full-size AI art made exports exceed V8's max string length. */
+export const BIBLE_IMAGE_SIZES = { cover: 1600, inline: 1600, gallery: 900, portrait: 320 } as const;
+type ImageUse = keyof typeof BIBLE_IMAGE_SIZES;
 
 export interface RenderedWorldBible {
   html: string;
   entryCount: number;
   artCount: number;
 }
+
+export interface WorldBibleCounts {
+  entryCount: number;
+  artCount: number;
+}
+
+type Emit = (chunk: string) => Promise<void> | void;
 
 /**
  * Renders a self-contained, World-themed, print-ready HTML World Bible with
@@ -55,8 +72,51 @@ export interface RenderedWorldBible {
 export async function buildWorldBibleHtml(
   store: WorkspaceStore,
   world: WorldConfig,
-  options: Omit<ExportWorldBibleOptions, 'format'>
+  options: Omit<ExportWorldBibleOptions, 'format'>,
+  encodeImage: ImageEncoder = embedOriginal
 ): Promise<RenderedWorldBible> {
+  const chunks: string[] = [];
+  const counts = await renderWorldBible(store, world, options, (c) => void chunks.push(c), encodeImage);
+  return { html: chunks.join(''), ...counts };
+}
+
+/**
+ * Streams the World Bible straight to a file, one entry at a time, so large Worlds never build
+ * a single giant string in memory.
+ */
+export async function writeWorldBibleHtmlFile(
+  store: WorkspaceStore,
+  world: WorldConfig,
+  options: Omit<ExportWorldBibleOptions, 'format'>,
+  outPath: string,
+  encodeImage: ImageEncoder = embedOriginal
+): Promise<WorldBibleCounts> {
+  const stream = createWriteStream(outPath, { encoding: 'utf8' });
+  const streamError = new Promise<never>((_, reject) => stream.once('error', reject));
+  const emit: Emit = (chunk) =>
+    new Promise<void>((resolve, reject) => {
+      stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+    });
+  try {
+    const counts = await Promise.race([
+      renderWorldBible(store, world, options, emit, encodeImage),
+      streamError,
+    ]);
+    await new Promise<void>((resolve, reject) => stream.end((err?: Error | null) => (err ? reject(err) : resolve())));
+    return counts;
+  } catch (err) {
+    stream.destroy();
+    throw err;
+  }
+}
+
+async function renderWorldBible(
+  store: WorkspaceStore,
+  world: WorldConfig,
+  options: Omit<ExportWorldBibleOptions, 'format'>,
+  emit: Emit,
+  encodeImage: ImageEncoder
+): Promise<WorldBibleCounts> {
   const [allEntries, allAssets] = await Promise.all([
     store.listAllEntriesInWorld(world.slug),
     store.listArtAssets(world.slug),
@@ -67,31 +127,21 @@ export async function buildWorldBibleHtml(
     (e) => includedSet.has(e.type) || (e.secondaryTypes ?? []).some((s) => includedSet.has(s))
   );
 
-  // Build data URI cache for all referenced assets (+ gallery if enabled)
+  // Images are encoded lazily, resized per use, and only the current entry's are held in memory
   const assetById = new Map(allAssets.map((a) => [a.id, a]));
-  const assetByRel = new Map(allAssets.map((a) => [a.relativePath.toLowerCase(), a]));
-  const dataUriById = new Map<string, string>();
-
-  const neededAssetIds = new Set<string>();
-  for (const e of includedEntries) {
-    if (e.coverAssetId) neededAssetIds.add(e.coverAssetId);
-    if (e.portraitAssetId) neededAssetIds.add(e.portraitAssetId);
-    const imgMatches = e.body.matchAll(/!\[[^\]]*\]\((assets\/[^)]+)\)/g);
-    for (const m of imgMatches) {
-      const found = assetByRel.get(m[1].toLowerCase());
-      if (found) neededAssetIds.add(found.id);
+  const assetByRel = new Map(
+    allAssets.map((a) => [decodeAssetRel(a.relativePath).toLowerCase(), a])
+  );
+  const imageUri = async (assetId: string | undefined, use: ImageUse): Promise<string | undefined> => {
+    const asset = assetId ? assetById.get(assetId) : undefined;
+    if (!asset || asset.missing) return undefined;
+    try {
+      const abs = store.resolveAssetAbsolutePath(world.slug, asset.relativePath);
+      return (await encodeImage(abs, BIBLE_IMAGE_SIZES[use])) ?? undefined;
+    } catch {
+      return undefined;
     }
-  }
-  if (options.includeArtGallery) {
-    for (const a of allAssets) neededAssetIds.add(a.id);
-  }
-
-  for (const id of neededAssetIds) {
-    const asset = assetById.get(id);
-    if (!asset) continue;
-    const uri = await assetToDataUri(store, world.slug, asset);
-    if (uri) dataUriById.set(id, uri);
-  }
+  };
 
   // Anchor lookup for [[wikilinks]]
   const anchorByKey = new Map<string, string>();
@@ -100,13 +150,19 @@ export async function buildWorldBibleHtml(
     anchorByKey.set(e.slug.toLowerCase(), `entry-${e.id}`);
   }
 
-  const renderMarkdown = (md: string): string => {
-    // Embed inline assets as data URIs
+  const renderMarkdown = async (md: string): Promise<string> => {
+    // Embed inline assets as (resized) data URIs
+    const inlineUris = new Map<string, string>();
+    for (const m of md.matchAll(/!\[[^\]]*\]\((assets\/[^)\s]+)\)/g)) {
+      const key = decodeAssetRel(m[1]).toLowerCase();
+      if (inlineUris.has(key)) continue;
+      const uri = await imageUri(assetByRel.get(key)?.id, 'inline');
+      if (uri) inlineUris.set(key, uri);
+    }
     let processed = md.replace(
-      /!\[([^\]]*)\]\((assets\/[^)]+)\)/g,
+      /!\[([^\]]*)\]\((assets\/[^)\s]+)\)/g,
       (_full, alt: string, rel: string) => {
-        const asset = assetByRel.get(rel.toLowerCase());
-        const uri = asset ? dataUriById.get(asset.id) : undefined;
+        const uri = inlineUris.get(decodeAssetRel(rel).toLowerCase());
         return uri ? `![${alt}](${uri})` : '';
       }
     );
@@ -125,6 +181,7 @@ export async function buildWorldBibleHtml(
     return marked.parse(processed, { async: false }) as string;
   };
 
+  const galleryAssets = allAssets.filter((a) => !a.missing);
   const tokens = resolveWorldTokens(world.theme, options.appearance);
   const isDark = options.appearance === 'dark';
 
@@ -156,95 +213,7 @@ export async function buildWorldBibleHtml(
     )
     .join('');
 
-  const sectionsHtml = sections
-    .map((sec) => {
-      const entriesHtml = sec.entries
-        .map((entry) => {
-          const coverUri = entry.coverAssetId ? dataUriById.get(entry.coverAssetId) : undefined;
-          const portraitUri = entry.portraitAssetId
-            ? dataUriById.get(entry.portraitAssetId)
-            : undefined;
-          const propPairs = Object.entries(entry.properties).filter(
-            ([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0)
-          );
-          return `
-          <article class="entry-card" id="entry-${escapeHtml(entry.id)}">
-            ${coverUri ? `<img class="entry-cover" src="${coverUri}" alt="${escapeHtml(entry.title)}" />` : ''}
-            <div class="entry-inner">
-              <div class="entry-header">
-                ${portraitUri ? `<img class="entry-portrait" src="${portraitUri}" alt="${escapeHtml(entry.title)}" />` : ''}
-                <div>
-                  <div class="entry-badge" style="color:${escapeHtml(sec.color)}">${escapeHtml(sec.title)}</div>
-                  <h3>${escapeHtml(entry.title)}</h3>
-                  ${
-                    entry.tags.length > 0
-                      ? `<div class="tag-row">${entry.tags
-                          .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`)
-                          .join('')}</div>`
-                      : ''
-                  }
-                </div>
-              </div>
-              ${
-                propPairs.length > 0
-                  ? `<dl class="prop-grid">${propPairs
-                      .map(
-                        ([k, v]) =>
-                          `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(
-                            Array.isArray(v) ? v.join(', ') : String(v)
-                          )}</dd></div>`
-                      )
-                      .join('')}</dl>`
-                  : ''
-              }
-              <div class="prose ${world.theme.editorialDropCap ? 'dropcap' : ''}">
-                ${renderMarkdown(entry.body)}
-              </div>
-            </div>
-          </article>`;
-        })
-        .join('\n');
-
-      return `
-      <section class="collection-section" id="section-${escapeHtml(sec.id)}">
-        <div class="section-heading">
-          <span class="dot" style="background:${escapeHtml(sec.color)}"></span>
-          <h2>${escapeHtml(sec.title)}</h2>
-        </div>
-        ${entriesHtml}
-      </section>`;
-    })
-    .join('\n');
-
-  const artGalleryHtml =
-    options.includeArtGallery && allAssets.length > 0
-      ? `
-      <section class="collection-section" id="section-art-gallery">
-        <div class="section-heading">
-          <span class="dot" style="background:${escapeHtml(tokens['--world-accent'])}"></span>
-          <h2>Concept Art Gallery</h2>
-        </div>
-        <div class="art-grid">
-          ${allAssets
-            .map((a) => {
-              const uri = dataUriById.get(a.id);
-              if (!uri) return '';
-              return `
-              <figure class="art-card">
-                <img src="${uri}" alt="${escapeHtml(a.title)}" />
-                <figcaption>
-                  <strong>${escapeHtml(a.title)}</strong>
-                  <span>${escapeHtml(a.category)}</span>
-                  ${a.caption ? `<p>${escapeHtml(a.caption)}</p>` : ''}
-                </figcaption>
-              </figure>`;
-            })
-            .join('')}
-        </div>
-      </section>`
-      : '';
-
-  const html = `<!doctype html>
+  const head = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -335,7 +304,7 @@ export async function buildWorldBibleHtml(
       <h1>${escapeHtml(world.name)}</h1>
       <div class="sub">World Bible · ${includedEntries.length} entries</div>
       ${tocHtml}
-      ${options.includeArtGallery && allAssets.length > 0 ? `<div class="toc-group"><a class="toc-section" href="#section-art-gallery">Concept Art Gallery <span>(${allAssets.length})</span></a></div>` : ''}
+      ${options.includeArtGallery && galleryAssets.length > 0 ? `<div class="toc-group"><a class="toc-section" href="#section-art-gallery">Concept Art Gallery <span>(${galleryAssets.length})</span></a></div>` : ''}
     </nav>
     <main class="content">
       <header class="hero">
@@ -343,16 +312,101 @@ export async function buildWorldBibleHtml(
         <h1>${escapeHtml(world.name)}</h1>
         ${world.subtitle ? `<p>${escapeHtml(world.subtitle)}</p>` : ''}
       </header>
-      ${sectionsHtml}
-      ${artGalleryHtml}
+`;
+  await emit(head);
+
+  for (const sec of sections) {
+    await emit(`
+      <section class="collection-section" id="section-${escapeHtml(sec.id)}">
+        <div class="section-heading">
+          <span class="dot" style="background:${escapeHtml(sec.color)}"></span>
+          <h2>${escapeHtml(sec.title)}</h2>
+        </div>`);
+    for (const entry of sec.entries) {
+      const [coverUri, portraitUri, bodyHtml] = await Promise.all([
+        imageUri(entry.coverAssetId, 'cover'),
+        imageUri(entry.portraitAssetId, 'portrait'),
+        renderMarkdown(entry.body),
+      ]);
+      const propPairs = Object.entries(entry.properties).filter(
+        ([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0)
+      );
+      await emit(`
+          <article class="entry-card" id="entry-${escapeHtml(entry.id)}">
+            ${coverUri ? `<img class="entry-cover" src="${coverUri}" alt="${escapeHtml(entry.title)}" />` : ''}
+            <div class="entry-inner">
+              <div class="entry-header">
+                ${portraitUri ? `<img class="entry-portrait" src="${portraitUri}" alt="${escapeHtml(entry.title)}" />` : ''}
+                <div>
+                  <div class="entry-badge" style="color:${escapeHtml(sec.color)}">${escapeHtml(sec.title)}</div>
+                  <h3>${escapeHtml(entry.title)}</h3>
+                  ${
+                    entry.tags.length > 0
+                      ? `<div class="tag-row">${entry.tags
+                          .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`)
+                          .join('')}</div>`
+                      : ''
+                  }
+                </div>
+              </div>
+              ${
+                propPairs.length > 0
+                  ? `<dl class="prop-grid">${propPairs
+                      .map(
+                        ([k, v]) =>
+                          `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(
+                            Array.isArray(v) ? v.join(', ') : String(v)
+                          )}</dd></div>`
+                      )
+                      .join('')}</dl>`
+                  : ''
+              }
+              <div class="prose ${world.theme.editorialDropCap ? 'dropcap' : ''}">
+                ${bodyHtml}
+              </div>
+            </div>
+          </article>`);
+    }
+    await emit(`
+      </section>`);
+  }
+
+  let galleryCount = 0;
+  if (options.includeArtGallery && galleryAssets.length > 0) {
+    await emit(`
+      <section class="collection-section" id="section-art-gallery">
+        <div class="section-heading">
+          <span class="dot" style="background:${escapeHtml(tokens['--world-accent'])}"></span>
+          <h2>Concept Art Gallery</h2>
+        </div>
+        <div class="art-grid">`);
+    for (const a of galleryAssets) {
+      const uri = await imageUri(a.id, 'gallery');
+      if (!uri) continue;
+      galleryCount++;
+      await emit(`
+              <figure class="art-card">
+                <img src="${uri}" alt="${escapeHtml(a.title)}" />
+                <figcaption>
+                  <strong>${escapeHtml(a.title)}</strong>
+                  <span>${escapeHtml(a.category)}</span>
+                  ${a.caption ? `<p>${escapeHtml(a.caption)}</p>` : ''}
+                </figcaption>
+              </figure>`);
+    }
+    await emit(`
+        </div>
+      </section>`);
+  }
+
+  await emit(`
     </main>
   </div>
 </body>
-</html>`;
+</html>`);
 
   return {
-    html,
     entryCount: includedEntries.length,
-    artCount: options.includeArtGallery ? allAssets.length : 0,
+    artCount: galleryCount,
   };
 }

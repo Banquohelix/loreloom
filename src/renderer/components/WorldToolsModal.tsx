@@ -53,6 +53,13 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
     const keepId = keepChoice[group.key] || group.entries[0]?.id;
     if (!keepId) return;
     const removeIds = group.entries.map((e) => e.id).filter((id) => id !== keepId);
+    const keepTitle = group.entries.find((e) => e.id === keepId)?.title ?? 'the kept entry';
+    const ok = window.confirm(
+      `Merge ${removeIds.length} duplicate ${removeIds.length === 1 ? 'entry' : 'entries'} into "${keepTitle}"?
+
+The duplicates are moved to the World's .trash/entries folder.`
+    );
+    if (!ok) return;
     setBusyKey(group.key);
     try {
       await bridge.mergeDuplicates(world.slug, keepId, removeIds);
@@ -64,6 +71,11 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
   };
 
   const handleMergeAll = async () => {
+    const removeCount = duplicates.reduce((n, g) => n + Math.max(0, g.entries.length - 1), 0);
+    const ok = window.confirm(
+      `Merge all ${duplicates.length} duplicate groups?\n\n${removeCount} entries will be merged into the one you chose to keep in each group and moved to the World's .trash/entries folder. Check each group's "keep" choice first.`
+    );
+    if (!ok) return;
     setBusyKey('all-dups');
     try {
       for (const group of duplicates) {

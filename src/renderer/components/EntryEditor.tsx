@@ -1,12 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import ImageExtension from '@tiptap/extension-image';
-import { marked } from 'marked';
-import TurndownService from 'turndown';
+import Link from '@tiptap/extension-link';
+import Table from '@tiptap/extension-table';
+import TableRow from '@tiptap/extension-table-row';
+import TableHeader from '@tiptap/extension-table-header';
+import TableCell from '@tiptap/extension-table-cell';
 import {
   Check,
   Code,
@@ -24,44 +27,24 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import type { ArtAsset, Entry, EntrySummary, WorldConfig } from '@shared/types';
+import type { ArtAsset, Entry, EntrySummary, UpdateEntryInput, UpdateEntryResult, WorldConfig } from '@shared/types';
+import { normalizeBodyForCompare } from '@shared/wikilink-repair';
 import { getBridge } from '../lib/bridge';
+import { editorHtmlToMarkdown, markdownToEditorHtml } from '../lib/markdown-codec';
+import { registerPendingSaveFlusher } from '../lib/pending-saves';
 
-const turndown = new TurndownService({
-  headingStyle: 'atx',
-  bulletListMarker: '-',
-  codeBlockStyle: 'fenced',
-});
-
-turndown.addRule('taskListItem', {
-  filter: (node) =>
-    node.nodeName === 'LI' && node.getAttribute('data-type') === 'taskItem',
-  replacement: (content, node) => {
-    const el = node as HTMLElement;
-    const checked = el.getAttribute('data-checked') === 'true';
-    return `- [${checked ? 'x' : ' '}] ${content.trim()}\n`;
-  },
-});
+const BODY_SAVE_DEBOUNCE_MS = 450;
 
 function markdownToHtml(md: string, worldSlug: string): string {
   const bridge = getBridge();
-  // Rewrite relative assets/... image links to loreloom-asset:// URLs for display
-  const withAssetUrls = md.replace(
-    /!\[([^\]]*)\]\((assets\/[^)]+)\)/g,
-    (_m, alt: string, rel: string) => `![${alt}](${bridge.getAssetUrl(worldSlug, rel)})`
-  );
-  return marked.parse(withAssetUrls, { async: false }) as string;
+  return markdownToEditorHtml(md, (rel) => bridge.getAssetUrl(worldSlug, rel));
 }
 
 function htmlToMarkdown(html: string, worldSlug: string): string {
-  const rawMd = turndown.turndown(html);
-  const prefix = `loreloom-asset://${encodeURIComponent(worldSlug)}/`;
-  return rawMd.replace(
-    new RegExp(`!\\[([^\\]]*)\\]\\(${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^)]+)\\)`, 'g'),
-    (_m, alt: string, encodedRel: string) =>
-      `![${alt}](${encodedRel.split('/').map(decodeURIComponent).join('/')})`
-  );
+  return editorHtmlToMarkdown(html, `loreloom-asset://${encodeURIComponent(worldSlug)}/`);
 }
+
+export type EntrySavePatch = Omit<UpdateEntryInput, 'worldSlug' | 'id'>;
 
 interface EntryEditorProps {
   world: WorldConfig;
@@ -70,17 +53,16 @@ interface EntryEditorProps {
   artAssets: ArtAsset[];
   inspectorOpen: boolean;
   onToggleInspector: () => void;
-  onSaveEntry: (patch: {
-    title?: string;
-    body?: string;
-    tags?: string[];
-    coverAssetId?: string | null;
-    portraitAssetId?: string | null;
-  }) => Promise<void>;
+  /** Saves a patch to THIS entry (the editor is keyed by entry id). Resolves null on failure. */
+  onSaveEntry: (patch: EntrySavePatch) => Promise<UpdateEntryResult | null>;
   onNavigateEntry: (entryId: string) => void;
   onCreateStubEntry: (title: string) => Promise<void>;
 }
 
+/**
+ * Mount with `key={entry.id}`: one editor instance per entry, so a debounced save can never
+ * write one entry's body into another.
+ */
 export function EntryEditor({
   world,
   entry,
@@ -95,14 +77,27 @@ export function EntryEditor({
   const bridge = getBridge();
   const [title, setTitle] = useState(entry.title);
   const [tagInput, setTagInput] = useState('');
-  const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
+  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [pickerMode, setPickerMode] = useState<'cover' | 'portrait' | 'inline' | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
   const [wikiFilter, setWikiFilter] = useState('');
 
   const saveTimerRef = useRef<number | null>(null);
-  const lastEntryIdRef = useRef(entry.id);
+  /** Unsaved edits exist in the editor that have not been sent yet. */
+  const pendingBodyRef = useRef(false);
+  const latestHtmlRef = useRef<string | null>(null);
+  /** Body the editor content is based on; sent as `baseBody` so the main process detects conflicts. */
+  const baseBodyRef = useRef(entry.body);
+  /** Last body this editor knows about (loaded, or optimistically saved). */
+  const lastKnownBodyRef = useRef(entry.body);
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const titleDirtyRef = useRef(false);
+  const titleValueRef = useRef(entry.title);
+  const mountedRef = useRef(true);
+  const onSaveEntryRef = useRef(onSaveEntry);
+  onSaveEntryRef.current = onSaveEntry;
+  const [reloadTick, setReloadTick] = useState(0);
 
   const coverAsset = useMemo(
     () => artAssets.find((a) => a.id === entry.coverAssetId),
@@ -116,8 +111,13 @@ export function EntryEditor({
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        heading: { levels: [1, 2, 3] },
+        heading: { levels: [1, 2, 3, 4, 5, 6] },
       }),
+      Link.configure({ openOnClick: false, autolink: true }),
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableHeader,
+      TableCell,
       Placeholder.configure({
         placeholder: 'Write your lore… Type / for blocks or [[ to link another entry',
       }),
@@ -128,6 +128,12 @@ export function EntryEditor({
     editorProps: {
       handleClick: (view, pos, event) => {
         if (!event.ctrlKey && !event.metaKey) return false;
+        const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+        const href = anchor?.getAttribute('href');
+        if (href && /^https?:\/\//i.test(href)) {
+          bridge.openExternalUrl(href);
+          return true;
+        }
         const $pos = view.state.doc.resolve(pos);
         const parentText = $pos.parent.textContent;
         const offset = $pos.parentOffset;
@@ -176,30 +182,97 @@ export function EntryEditor({
         setWikiOpen(false);
       }
 
+      latestHtmlRef.current = ed.getHTML();
+      pendingBodyRef.current = true;
       setSaveState('saving');
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = window.setTimeout(async () => {
-        const md = htmlToMarkdown(ed.getHTML(), world.slug);
-        await onSaveEntry({ body: md });
-        setSaveState('saved');
-      }, 450);
+      saveTimerRef.current = window.setTimeout(() => {
+        void flushBody();
+      }, BODY_SAVE_DEBOUNCE_MS);
     },
   });
 
-  useEffect(() => {
-    setTitle(entry.title);
-    if (editor && lastEntryIdRef.current !== entry.id) {
-      lastEntryIdRef.current = entry.id;
-      editor.commands.setContent(markdownToHtml(entry.body, world.slug), false);
+  /** Sends any pending body edit now (debounce fired, unmount, or window close). */
+  const flushBody = useCallback(async (): Promise<void> => {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
     }
-  }, [entry.id, entry.title, entry.body, world.slug, editor]);
+    if (!pendingBodyRef.current || latestHtmlRef.current === null) {
+      await inflightRef.current;
+      return;
+    }
+    pendingBodyRef.current = false;
+    const md = htmlToMarkdown(latestHtmlRef.current, world.slug);
+    const previous = inflightRef.current;
+    const run = (async () => {
+      await previous;
+      // Read the base only after earlier saves of this entry finished
+      const baseBody = baseBodyRef.current;
+      lastKnownBodyRef.current = md;
+      try {
+        const res = await onSaveEntryRef.current({ body: md, baseBody });
+        if (res && !res.conflictCopy) {
+          baseBodyRef.current = md;
+        }
+        if (mountedRef.current) {
+          setSaveState(res ? (pendingBodyRef.current ? 'saving' : 'saved') : 'error');
+          setReloadTick((t) => t + 1);
+        }
+      } catch {
+        if (mountedRef.current) setSaveState('error');
+      }
+    })();
+    inflightRef.current = run;
+    await run;
+  }, [world.slug]);
+
+  const flushTitle = useCallback(async (): Promise<void> => {
+    if (!titleDirtyRef.current) return;
+    titleDirtyRef.current = false;
+    const next = titleValueRef.current.trim();
+    if (!next) return;
+    await onSaveEntryRef.current({ title: next });
+  }, []);
+
+  // Flush on unmount (switching entry/tab/world) and before the window closes
+  useEffect(() => {
+    mountedRef.current = true;
+    const unregister = registerPendingSaveFlusher(async () => {
+      await Promise.all([flushBody(), flushTitle()]);
+    });
+    return () => {
+      mountedRef.current = false;
+      unregister();
+      void flushBody();
+      void flushTitle();
+    };
+  }, [flushBody, flushTitle]);
+
+  // Reload content changed elsewhere (another PC via OneDrive/Drive, intake, the other split pane,
+  // or a conflict where the on-disk version was kept) when there are no unsaved local edits.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    if (normalizeBodyForCompare(entry.body) === normalizeBodyForCompare(lastKnownBodyRef.current)) return;
+    if (pendingBodyRef.current || saveTimerRef.current) return;
+    lastKnownBodyRef.current = entry.body;
+    baseBodyRef.current = entry.body;
+    latestHtmlRef.current = null;
+    editor.commands.setContent(markdownToHtml(entry.body, world.slug), false);
+  }, [entry.body, world.slug, editor, reloadTick]);
+
+  useEffect(() => {
+    if (!titleDirtyRef.current) {
+      setTitle(entry.title);
+      titleValueRef.current = entry.title;
+    }
+  }, [entry.title]);
 
   const handleTitleBlur = async () => {
-    if (title.trim() && title !== entry.title) {
-      setSaveState('saving');
-      await onSaveEntry({ title: title.trim() });
-      setSaveState('saved');
-    }
+    if (!titleDirtyRef.current) return;
+    setSaveState('saving');
+    await flushTitle();
+    if (mountedRef.current) setSaveState('saved');
   };
 
   const handleAddTag = async (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -319,6 +392,8 @@ export function EntryEditor({
           <span className="flex items-center gap-1 text-[11px] text-[var(--studio-muted)]">
             {saveState === 'saving' ? (
               'Saving…'
+            ) : saveState === 'error' ? (
+              <span className="text-red-500">Save failed, keep this page open and retry</span>
             ) : (
               <>
                 <Check className="w-3 h-3 text-emerald-500" /> Saved
@@ -413,8 +488,15 @@ export function EntryEditor({
           <div className="flex-1 min-w-0">
             <input
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                titleDirtyRef.current = true;
+                titleValueRef.current = e.target.value;
+                setTitle(e.target.value);
+              }}
               onBlur={handleTitleBlur}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
               placeholder="Untitled Entry"
               className="w-full bg-transparent world-heading text-4xl font-semibold tracking-tight outline-none placeholder:opacity-40"
             />

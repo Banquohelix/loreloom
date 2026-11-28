@@ -195,6 +195,17 @@ export function ArtLightbox({
         <div className="pt-4 border-t border-[var(--studio-border)]">
           <button
             onClick={async () => {
+              const linkedNote =
+                linkedEntries.length > 0
+                  ? `\n\nWARNING: ${linkedEntries.length} lore ${linkedEntries.length === 1 ? 'entry uses' : 'entries use'} this image (${linkedEntries
+                      .slice(0, 3)
+                      .map((e) => e.title)
+                      .join(', ')}${linkedEntries.length > 3 ? '…' : ''}). Those covers, portraits and inline images will break.`
+                  : '';
+              const ok = window.confirm(
+                `Delete "${asset.title}"?${linkedNote}\n\nThe file is moved to this World's .trash/assets folder, so it can be restored.`
+              );
+              if (!ok) return;
               await onDelete(asset.id);
               onClose();
             }}

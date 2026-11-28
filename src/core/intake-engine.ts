@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import matter from 'gray-matter';
 import {
@@ -12,6 +14,7 @@ import {
   type WorldConfig,
 } from '../shared/types';
 import { normalizeFrontmatterType } from '../shared/type-normalizer';
+import { normalizeBodyForCompare } from '../shared/wikilink-repair';
 import type { WorkspaceStore } from './workspace-store';
 
 export { NEEDS_TRIAGE_TAG };
@@ -36,10 +39,30 @@ export interface ArtClassification {
 }
 
 interface IntakeStateRecord {
+  /** `sha1:<hex>` of the file content. Legacy records used `size:mtime`, which differs on every PC. */
   fingerprint: string;
   kind: 'entry' | 'art';
   targetId: string;
   lastSyncedAt: string;
+  /** Hash of the Entry body as Loreloom last wrote it from this source, to detect manual edits. */
+  importedBodyHash?: string;
+}
+
+/** Tag added when an intake source changed but the Entry had been edited in Loreloom. */
+export const INTAKE_UPDATE_TAG = 'intake-update';
+
+function hashBody(body: string): string {
+  return crypto.createHash('sha1').update(normalizeBodyForCompare(body)).digest('hex');
+}
+
+function hashFile(fullPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha1');
+    createReadStream(fullPath)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('error', reject)
+      .on('end', () => resolve(`sha1:${hash.digest('hex')}`));
+  });
 }
 
 interface IntakeStateFile {
@@ -271,7 +294,9 @@ async function readIntakeState(statePath: string): Promise<IntakeStateFile> {
 
 async function writeIntakeState(statePath: string, state: IntakeStateFile): Promise<void> {
   await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf8');
+  const tempPath = `${statePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(state, null, 2), 'utf8');
+  await fs.rename(tempPath, statePath);
 }
 
 interface ScannedIntakeFile {
@@ -298,7 +323,6 @@ async function scanIntakeFolder(rootFolder: string): Promise<ScannedIntakeFile[]
         const ext = path.extname(dirent.name).toLowerCase();
         if (!TEXT_EXTENSIONS.has(ext) && !IMAGE_EXTENSIONS.has(ext)) continue;
         const fullPath = path.join(dir, dirent.name);
-        const stat = await fs.stat(fullPath);
         const relPath = folderRel ? `${folderRel}/${dirent.name}` : dirent.name;
         results.push({
           rootFolder,
@@ -306,7 +330,8 @@ async function scanIntakeFolder(rootFolder: string): Promise<ScannedIntakeFile[]
           relPath,
           folderRel,
           ext,
-          fingerprint: `${stat.size}:${Math.floor(stat.mtimeMs)}`,
+          // Content hash, not size:mtime: OneDrive/Google Drive assign new mtimes on every PC
+          fingerprint: await hashFile(fullPath),
         });
       }
     }
@@ -391,11 +416,47 @@ export class IntakeEngine {
             if (prev && prev.kind === 'entry') {
               const existing = await store.readEntryById(world.slug, prev.targetId);
               if (existing) {
+                const sourceBody = parsed.content.trim();
+                if (normalizeBodyForCompare(existing.body) === normalizeBodyForCompare(sourceBody)) {
+                  // Only the fingerprint changed (e.g. a legacy size:mtime record on another PC)
+                  state.records[stateKey] = {
+                    ...prev,
+                    fingerprint: file.fingerprint,
+                    importedBodyHash: hashBody(existing.body),
+                    lastSyncedAt: new Date().toISOString(),
+                  };
+                  skippedUnchanged++;
+                  continue;
+                }
+
+                // Never overwrite lore the user edited in Loreloom. Only replace the body when it
+                // still matches exactly what intake last wrote; otherwise append the new version.
+                const editedInLoreloom =
+                  !prev.importedBodyHash || prev.importedBodyHash !== hashBody(existing.body);
+                const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+                const nextBody = editedInLoreloom
+                  ? [
+                      existing.body.trimEnd(),
+                      '',
+                      '---',
+                      '',
+                      `## Intake update (${stamp})`,
+                      '',
+                      `_Source changed: ${file.relPath}. Review and merge, then remove this section._`,
+                      '',
+                      sourceBody,
+                      '',
+                    ].join('\n')
+                  : sourceBody;
+
                 const updated = await store.updateEntry({
                   worldSlug: world.slug,
                   id: existing.id,
-                  title,
-                  body: parsed.content.trim(),
+                  title: editedInLoreloom ? existing.title : title,
+                  body: nextBody,
+                  tags: editedInLoreloom
+                    ? Array.from(new Set([...existing.tags, INTAKE_UPDATE_TAG]))
+                    : existing.tags,
                   properties: { ...classification.extractedProperties, ...existing.properties },
                 });
                 state.records[stateKey] = {
@@ -403,6 +464,7 @@ export class IntakeEngine {
                   kind: 'entry',
                   targetId: updated.id,
                   lastSyncedAt: new Date().toISOString(),
+                  importedBodyHash: hashBody(updated.body),
                 };
                 updatedEntries++;
                 items.push({
@@ -433,6 +495,7 @@ export class IntakeEngine {
               kind: 'entry',
               targetId: created.id,
               lastSyncedAt: new Date().toISOString(),
+              importedBodyHash: hashBody(created.body),
             };
 
             importedEntries++;
@@ -451,6 +514,18 @@ export class IntakeEngine {
           }
         } else if (IMAGE_EXTENSIONS.has(file.ext)) {
           try {
+            if (prev && prev.kind === 'art') {
+              // Changed image: replace bytes in place so the asset keeps its ID, caption and links
+              const replaced = await store.replaceArtAssetFile(world.slug, prev.targetId, file.fullPath);
+              if (replaced) {
+                state.records[stateKey] = {
+                  ...prev,
+                  fingerprint: file.fingerprint,
+                  lastSyncedAt: new Date().toISOString(),
+                };
+                continue;
+              }
+            }
             const classification = classifyArtAsset(file.relPath);
             const saved = await store.saveArtAssetFromPath(
               world.slug,
