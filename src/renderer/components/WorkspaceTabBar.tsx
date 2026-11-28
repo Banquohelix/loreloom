@@ -78,13 +78,39 @@ export function WorkspaceTabBar({
 }: WorkspaceTabBarProps) {
   return (
     <div className="h-10 shrink-0 flex items-center justify-between gap-2 px-2 border-b border-[var(--studio-border)] bg-[var(--studio-sidebar)] select-none">
-      <div className="flex items-center gap-1 overflow-x-auto min-w-0 py-1">
-        {tabs.map((tab) => {
+      <div className="flex items-center gap-1 overflow-x-auto min-w-0 py-1" role="tablist" aria-label="Open tabs">
+        {tabs.map((tab, index) => {
           const active = tab.id === activeTabId;
           const label = getViewLabel(tab.view, world, entries);
           return (
             <div
               key={tab.id}
+              role="tab"
+              aria-selected={active}
+              tabIndex={active ? 0 : -1}
+              data-tab-id={tab.id}
+              onKeyDown={(e) => {
+                const focusTab = (i: number) => {
+                  const next = tabs[(i + tabs.length) % tabs.length];
+                  onSelectTab(next.id);
+                  requestAnimationFrame(() =>
+                    document.querySelector<HTMLElement>(`[data-tab-id="${next.id}"]`)?.focus()
+                  );
+                };
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelectTab(tab.id);
+                } else if (e.key === 'ArrowRight') {
+                  e.preventDefault();
+                  focusTab(index + 1);
+                } else if (e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  focusTab(index - 1);
+                } else if ((e.key === 'Delete' || e.key === 'Backspace') && tabs.length > 1) {
+                  e.preventDefault();
+                  onCloseTab(tab.id);
+                }
+              }}
               onClick={() => onSelectTab(tab.id)}
               onMouseDown={(e) => {
                 if (e.button === 1) {
@@ -106,7 +132,9 @@ export function WorkspaceTabBar({
                     e.stopPropagation();
                     onCloseTab(tab.id);
                   }}
-                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                  tabIndex={-1}
+                  aria-label={`Close ${label}`}
+                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition cursor-pointer"
                   title="Close Tab"
                 >
                   <X className="w-3 h-3" />

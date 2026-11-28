@@ -435,7 +435,7 @@ export function CollectionView({
             )}
 
             <div className="flex gap-4 overflow-x-auto pb-4 items-start">
-              {boardColumns.map((col) => {
+              {boardColumns.map((col, colIndex) => {
                 const isDragOver = dragOverCol === col.value;
                 return (
                   <div
@@ -475,9 +475,22 @@ export function CollectionView({
                           <div
                             key={entry.id}
                             draggable
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`${entry.title}, ${col.label}. Enter to open, Alt+Left or Alt+Right to move.`}
                             onDragStart={(e) => {
                               e.dataTransfer.setData('text/loreloom-entry-id', entry.id);
                               e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onKeyDown={async (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                onSelectEntry(entry.id);
+                              } else if (e.altKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && onMoveEntryProperty) {
+                                e.preventDefault();
+                                const target = boardColumns[colIndex + (e.key === 'ArrowRight' ? 1 : -1)];
+                                if (target) await onMoveEntryProperty(entry.id, activeBoardField.key, target.value);
+                              }
                             }}
                             onClick={() => onSelectEntry(entry.id)}
                             className="p-3 rounded-xl border border-[var(--world-canvas-border)] bg-[var(--world-canvas-bg)] hover:border-amber-500/60 shadow-xs transition cursor-pointer space-y-1.5"

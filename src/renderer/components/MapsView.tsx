@@ -347,9 +347,20 @@ export function MapsView({
                       top: `${pin.y}%`,
                       transform: `translate(-50%, -100%) scale(${1 / Math.sqrt(zoom)})`,
                     }}
-                    className="absolute z-10"
+                    className="absolute z-10 outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded-full"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Map pin: ${pin.label}${linked ? `, linked to ${linked.title}` : ''}`}
                     onMouseEnter={() => setHoveredPinId(pin.id)}
                     onMouseLeave={() => setHoveredPinId(null)}
+                    onFocus={() => setHoveredPinId(pin.id)}
+                    onBlur={() => setHoveredPinId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedPinId(pin.id);
+                      }
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedPinId(pin.id);

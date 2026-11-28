@@ -399,6 +399,16 @@ export function EntryEditor({
 
   runSlashCommandRef.current = runSlashCommand;
 
+  // Esc closes the concept-art picker
+  useEffect(() => {
+    if (!pickerMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPickerMode(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pickerMode]);
+
   const handlePickArt = async (asset: ArtAsset) => {
     if (pickerMode === 'cover') {
       await onSaveEntry({ coverAssetId: asset.id });

@@ -27,6 +27,7 @@ import {
 import { generateWorldPromptFramework } from '@shared/prompt-framework';
 import { getBridge } from '../lib/bridge';
 import { notifyError } from '../lib/notify';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 const ART_CATEGORIES: ArtCategory[] = ['character', 'environment', 'prop', 'mood', 'map', 'other'];
 
@@ -47,6 +48,7 @@ export function IntakeSyncModal({
   onNavigateEntry,
   onClose,
 }: IntakeSyncModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [folders, setFolders] = useState<string[]>([]);
   const [tab, setTab] = useState<'folders' | 'triage' | 'framework'>('folders');
@@ -204,6 +206,11 @@ export function IntakeSyncModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Intake folder sync"
+        tabIndex={-1}
         className="max-w-2xl w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-5 max-h-[86vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { UpdateCheckResult } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 interface UpdateModalProps {
   currentVersion: string;
@@ -24,6 +25,7 @@ export function UpdateModal({
   onResultUpdated,
   onClose,
 }: UpdateModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [result, setResult] = useState<UpdateCheckResult | null>(initialResult);
   const [checking, setChecking] = useState(false);
@@ -91,6 +93,11 @@ export function UpdateModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Loreloom updates"
+        tabIndex={-1}
         className="max-w-lg w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-5"
         onClick={(e) => e.stopPropagation()}
       >
