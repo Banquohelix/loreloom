@@ -76,9 +76,17 @@ describe('Loreloom MCP server', () => {
     expect(otherPath.status).toBe(404);
   });
 
-  it('bridges stdio to the endpoint for Claude Desktop', async () => {
-    const bridge = spawn(process.execPath, [path.resolve(__dirname, '../../../electron/mcp-bridge.ts')], {
-      env: { ...process.env, LORELOOM_MCP_URL: server.url, LORELOOM_MCP_TOKEN: token },
+  it.each([
+    ['environment variables (Claude Desktop)', [] as string[], { LORELOOM_MCP_URL: '', LORELOOM_MCP_TOKEN: '' }],
+    ['--url/--token arguments (Grok Bot STDIO)', ['--url', '', '--token', ''], {}],
+  ])('bridges stdio to the endpoint via %s', async (_label, argTemplate, envTemplate) => {
+    const args = argTemplate.length ? ['--url', server.url, '--token', token] : [];
+    const env = Object.keys(envTemplate).length ? { LORELOOM_MCP_URL: server.url, LORELOOM_MCP_TOKEN: token } : {};
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.LORELOOM_MCP_URL;
+    delete cleanEnv.LORELOOM_MCP_TOKEN;
+    const bridge = spawn(process.execPath, [path.resolve(__dirname, '../../../electron/mcp-bridge.ts'), ...args], {
+      env: { ...cleanEnv, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const lines: string[] = [];

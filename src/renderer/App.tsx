@@ -715,7 +715,7 @@ export default function App() {
         { id: 'intake', label: 'Open Intake Folder Sync & AI Framework', category: 'Tools', run: () => setIntakeModalOpen(true) },
         { id: 'hygiene', label: 'Open World Cleanup & Art Auto-Linker', category: 'Tools', run: () => setWorldToolsModalOpen(true) },
         { id: 'trash', label: 'Open Trash (restore deleted items)', category: 'Tools', run: () => setTrashModalOpen(true) },
-        { id: 'ai-assistants', label: 'AI Assistants (connect Claude, Cursor, OpenCode, Grok Build, ChatGPT)', category: 'Tools', run: () => setAiModalOpen(true) },
+        { id: 'ai-assistants', label: 'AI Assistants (connect Claude, Cursor, OpenCode, Grok Bot, Grok Build, ChatGPT)', category: 'Tools', run: () => setAiModalOpen(true) },
         { id: 'export-bible', label: 'Export Illustrated World Bible (PDF / HTML)', category: 'Export', run: () => setExportBibleModalOpen(true) },
         { id: 'backup-zip', label: `Backup "${activeWorld.name}" as .zip Snapshot`, category: 'Export', run: handleExportWorldZip },
         { id: 'theme', label: 'Customize World Theme & Style', category: 'Appearance', run: () => setThemeDrawerOpen(true) }

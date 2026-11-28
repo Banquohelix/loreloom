@@ -1,6 +1,6 @@
 # AI assistants (MCP)
 
-Loreloom can let AI assistants work in your Worlds alongside you: search and read lore, write new characters and places, link entries, save concept art they generate, and build pinned maps. It uses the Model Context Protocol (MCP). Supported setups: **Claude Code, Claude Desktop, Cursor, OpenCode and Grok Build** today, **ChatGPT** with remote access (next update).
+Loreloom can let AI assistants work in your Worlds alongside you: search and read lore, write new characters and places, link entries, save concept art they generate, and build pinned maps. It uses the Model Context Protocol (MCP). Supported setups: **Claude Code, Claude Desktop, Cursor, OpenCode, Grok Bot and Grok Build** today, **ChatGPT** with remote access (next update).
 
 ## Turn it on
 
@@ -12,7 +12,8 @@ Loreloom can let AI assistants work in your Worlds alongside you: search and rea
    - **Claude Desktop:** paste the JSON into `claude_desktop_config.json` (Settings → Developer → Edit Config) and restart Claude. It runs a small bridge with Loreloom's own executable, so you don't need Node.js. Use the installed version of Loreloom, not the portable one, whose path changes each launch.
    - **Cursor:** add the JSON to `%USERPROFILE%\.cursor\mcp.json` (global, so the token stays out of your repos) and restart Cursor.
    - **OpenCode:** merge the JSON into `%USERPROFILE%\.config\opencode\opencode.json`. `oauth` is off because Loreloom uses the token.
-   - **Grok Build:** run the `grok mcp add --transport http …` command, then `grok mcp doctor loreloom`.
+   - **Grok Bot** (the desktop app): add a custom MCP server with transport **HTTP**, the server URL, and a header `Authorization: Bearer <token>`. If HTTP can't connect, use **STDIO** with command `node` and the arguments shown (the bridge accepts `--url` and `--token`).
+   - **Grok Build** (the command-line agent): run the `grok mcp add --transport http …` command, then `grok mcp doctor loreloom`.
    - **Other MCP apps on this PC:** use the server URL plus the `Authorization: Bearer <token>` header.
 3. Keep Loreloom open while the assistant works.
 

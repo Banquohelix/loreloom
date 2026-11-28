@@ -44,13 +44,14 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint: strin
   );
 }
 
-type ClientTab = 'claude-code' | 'claude-desktop' | 'cursor' | 'opencode' | 'grok' | 'chatgpt' | 'other';
+type ClientTab = 'claude-code' | 'claude-desktop' | 'cursor' | 'opencode' | 'grok-bot' | 'grok' | 'chatgpt' | 'other';
 
 const CLIENT_TABS: Array<[ClientTab, string]> = [
   ['claude-code', 'Claude Code'],
   ['claude-desktop', 'Claude Desktop'],
   ['cursor', 'Cursor'],
   ['opencode', 'OpenCode'],
+  ['grok-bot', 'Grok Bot'],
   ['grok', 'Grok Build'],
   ['chatgpt', 'ChatGPT'],
   ['other', 'Other'],
@@ -271,6 +272,29 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                     <p className="text-[11px] text-[var(--studio-muted)]">
                       Merge the "loreloom" entry into the file's existing mcp section. oauth is off because Loreloom uses the token instead.
                     </p>
+                  </div>
+                )}
+                {tab === 'grok-bot' && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-[var(--studio-muted)]">
+                      In Grok Bot, add a custom MCP server and fill in its form:
+                    </p>
+                    <CopyBlock label="Name" value="loreloom" />
+                    <CopyBlock label="Transport" value="HTTP" />
+                    <CopyBlock label="Server URL" value={status.url} />
+                    <CopyBlock label="Header name" value="Authorization" />
+                    <CopyBlock label="Header value" value={`Bearer ${status.token}`} secret={reveal ? undefined : status.token} />
+                    <details className="text-[11px] text-[var(--studio-muted)]">
+                      <summary className="cursor-pointer">If HTTP can't connect, use STDIO instead (needs Node.js)</summary>
+                      <div className="space-y-2 pt-2">
+                        <CopyBlock label="Command" value="node" />
+                        <CopyBlock
+                          label="Arguments"
+                          value={`${status.bridgePath} --url ${status.url} --token ${status.token}`}
+                          secret={reveal ? undefined : status.token}
+                        />
+                      </div>
+                    </details>
                   </div>
                 )}
                 {tab === 'grok' && (

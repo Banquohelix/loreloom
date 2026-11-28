@@ -3,13 +3,21 @@
  *
  * Loreloom copies this file to %APPDATA%\Loreloom\mcp\loreloom-mcp-bridge.js and the client runs:
  *   Loreloom.exe <that file>   with ELECTRON_RUN_AS_NODE=1, LORELOOM_MCP_URL and LORELOOM_MCP_TOKEN
+ * Clients that can't set environment variables can pass `--url` and `--token` instead, and run it
+ * with Node.js: `node loreloom-mcp-bridge.js --url <url> --token <token>`.
  * It forwards JSON-RPC lines from stdin to Loreloom's local HTTP endpoint and writes the replies to
  * stdout. It uses only Node built-ins, so it runs without node_modules.
  */
 import readline from 'node:readline';
 
-const url = process.env.LORELOOM_MCP_URL || 'http://127.0.0.1:7766/mcp';
-const token = process.env.LORELOOM_MCP_TOKEN || '';
+/** `--url <u>` / `--token <t>` arguments win over environment variables (some clients can't set env). */
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`);
+  return i !== -1 ? process.argv[i + 1] : undefined;
+}
+
+const url = arg('url') || process.env.LORELOOM_MCP_URL || 'http://127.0.0.1:47833/mcp';
+const token = arg('token') || process.env.LORELOOM_MCP_TOKEN || '';
 
 type JsonRpc = { jsonrpc: '2.0'; id?: string | number | null; method?: string; [k: string]: unknown };
 
