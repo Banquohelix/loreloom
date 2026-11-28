@@ -277,7 +277,10 @@ export default function App() {
     await handleSelectWorld(created.slug);
   };
 
-  const handleCreateEntry = async (typeId = 'page') => {
+  const handleCreateEntry = async (
+    typeId = 'page',
+    initialProperties?: Record<string, import('@shared/types').EntryPropertyValue>
+  ) => {
     if (!activeWorld) return;
     const et = activeWorld.entityTypes.find((t) => t.id === typeId);
     const created = await bridge.createEntry({
@@ -285,9 +288,25 @@ export default function App() {
       title: `Untitled ${et?.name ?? 'Entry'}`,
       type: typeId,
       folder: typeId === 'page' ? 'lore' : `${typeId}s`,
+      properties: initialProperties,
     });
     await refreshWorldData(activeWorld.slug);
     setActiveView({ kind: 'entry', entryId: created.id });
+  };
+
+  const handleMoveEntryProperty = async (entryId: string, key: string, value: string) => {
+    if (!activeWorld) return;
+    const existing = await bridge.readEntry(activeWorld.slug, entryId);
+    if (!existing) return;
+    const nextProps = { ...existing.properties };
+    if (value) nextProps[key] = value;
+    else delete nextProps[key];
+    await bridge.updateEntry({
+      worldSlug: activeWorld.slug,
+      id: entryId,
+      properties: nextProps,
+    });
+    await refreshWorldData(activeWorld.slug);
   };
 
   const handleCreateStubEntry = async (title: string) => {
@@ -551,6 +570,7 @@ export default function App() {
                   artAssets={artAssets}
                   onCreateEntry={handleCreateEntry}
                   onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
+                  onMoveEntryProperty={handleMoveEntryProperty}
                 />
               ) : activeView.kind === 'entry' && currentEntry ? (
                 <>
@@ -705,6 +725,7 @@ export default function App() {
                           artAssets={artAssets}
                           onCreateEntry={handleCreateEntry}
                           onSelectEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
+                          onMoveEntryProperty={handleMoveEntryProperty}
                         />
                       ) : null;
                     })()

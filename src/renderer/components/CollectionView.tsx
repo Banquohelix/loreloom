@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Clock, LayoutGrid, Plus, Search, Table as TableIcon } from 'lucide-react';
-import type { ArtAsset, EntityTypeDef, EntrySummary, WorldConfig } from '@shared/types';
+import { Clock, Kanban, LayoutGrid, Plus, Search, Table as TableIcon } from 'lucide-react';
+import type {
+  ArtAsset,
+  EntityTypeDef,
+  EntryPropertyValue,
+  EntrySummary,
+  WorldConfig,
+} from '@shared/types';
 import { groupEntriesForTimeline } from '@shared/timeline-utils';
+import {
+  getBoardGroupableFields,
+  groupEntriesIntoColumns,
+  pickDefaultBoardField,
+} from '@shared/board-utils';
 import { getBridge } from '../lib/bridge';
 import { EntityIcon } from './IconBadge';
 
@@ -10,8 +21,9 @@ interface CollectionViewProps {
   entityType: EntityTypeDef;
   entries: EntrySummary[];
   artAssets: ArtAsset[];
-  onCreateEntry: (typeId: string) => void;
+  onCreateEntry: (typeId: string, initialProperties?: Record<string, EntryPropertyValue>) => void;
   onSelectEntry: (entryId: string) => void;
+  onMoveEntryProperty?: (entryId: string, key: string, value: string) => Promise<void>;
 }
 
 export function CollectionView({
@@ -21,18 +33,30 @@ export function CollectionView({
   artAssets,
   onCreateEntry,
   onSelectEntry,
+  onMoveEntryProperty,
 }: CollectionViewProps) {
   const bridge = getBridge();
-  const [viewMode, setViewMode] = useState<'gallery' | 'table' | 'timeline'>(
+  const [viewMode, setViewMode] = useState<'gallery' | 'table' | 'timeline' | 'board'>(
     entityType.id === 'event' ? 'timeline' : entityType.defaultView
   );
   const [search, setSearch] = useState('');
   const [eraFilter, setEraFilter] = useState<string>('all');
+  const groupableFields = useMemo(() => getBoardGroupableFields(entityType), [entityType]);
+  const [boardFieldKey, setBoardFieldKey] = useState<string>(
+    () => pickDefaultBoardField(entityType).key
+  );
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
   useEffect(() => {
     setViewMode(entityType.id === 'event' ? 'timeline' : entityType.defaultView);
     setEraFilter('all');
-  }, [entityType.id, entityType.defaultView]);
+    setBoardFieldKey(pickDefaultBoardField(entityType).key);
+  }, [entityType]);
+
+  const activeBoardField = useMemo(
+    () => groupableFields.find((f) => f.key === boardFieldKey) ?? groupableFields[0],
+    [groupableFields, boardFieldKey]
+  );
 
   const assetById = useMemo(() => {
     const m = new Map<string, ArtAsset>();
@@ -60,6 +84,11 @@ export function CollectionView({
         ? timelineGroups
         : timelineGroups.filter((g) => g.era === eraFilter),
     [timelineGroups, eraFilter]
+  );
+
+  const boardColumns = useMemo(
+    () => groupEntriesIntoColumns(filtered, activeBoardField),
+    [filtered, activeBoardField]
   );
 
   return (
@@ -122,6 +151,15 @@ export function CollectionView({
                 title="Timeline & Era View"
               >
                 <Clock className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setViewMode('board')}
+                className={`p-1.5 rounded-md transition cursor-pointer ${
+                  viewMode === 'board' ? 'bg-[var(--studio-surface)] shadow-xs' : 'opacity-60'
+                }`}
+                title="Kanban Board View"
+              >
+                <Kanban className="w-3.5 h-3.5" />
               </button>
             </div>
 
@@ -330,6 +368,119 @@ export function CollectionView({
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        ) : viewMode === 'board' ? (
+          <div className="space-y-4">
+            {groupableFields.length > 1 && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-[var(--studio-muted)]">Group columns by:</span>
+                <select
+                  value={activeBoardField.key}
+                  onChange={(e) => setBoardFieldKey(e.target.value)}
+                  className="rounded-lg border border-[var(--world-canvas-border)] bg-[var(--world-canvas-muted)]/60 px-2.5 py-1 text-xs outline-none"
+                >
+                  {groupableFields.map((f) => (
+                    <option key={f.key} value={f.key}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex gap-4 overflow-x-auto pb-4 items-start">
+              {boardColumns.map((col) => {
+                const isDragOver = dragOverCol === col.value;
+                return (
+                  <div
+                    key={col.value || '__unassigned'}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOverCol(col.value);
+                    }}
+                    onDragLeave={() => setDragOverCol((cur) => (cur === col.value ? null : cur))}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      setDragOverCol(null);
+                      const entryId = e.dataTransfer.getData('text/loreloom-entry-id');
+                      if (entryId && onMoveEntryProperty) {
+                        await onMoveEntryProperty(entryId, activeBoardField.key, col.value);
+                      }
+                    }}
+                    className={`w-72 shrink-0 rounded-2xl border p-3 space-y-2.5 transition ${
+                      isDragOver
+                        ? 'border-amber-500 bg-amber-500/8'
+                        : 'border-[var(--world-canvas-border)] bg-[var(--world-canvas-muted)]/45'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-xs font-semibold">{col.label}</span>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/10 text-[var(--studio-muted)]">
+                        {col.entries.length}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2 min-h-[60px]">
+                      {col.entries.map((entry) => {
+                        const art =
+                          (entry.portraitAssetId && assetById.get(entry.portraitAssetId)) ||
+                          (entry.coverAssetId && assetById.get(entry.coverAssetId));
+                        return (
+                          <div
+                            key={entry.id}
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/loreloom-entry-id', entry.id);
+                              e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onClick={() => onSelectEntry(entry.id)}
+                            className="p-3 rounded-xl border border-[var(--world-canvas-border)] bg-[var(--world-canvas-bg)] hover:border-amber-500/60 shadow-xs transition cursor-pointer space-y-1.5"
+                          >
+                            {art && (
+                              <img
+                                src={bridge.getAssetUrl(world.slug, art.relativePath)}
+                                alt={entry.title}
+                                className="w-full h-24 object-cover rounded-lg mb-1.5"
+                              />
+                            )}
+                            <div className="text-xs font-semibold leading-snug">{entry.title}</div>
+                            {entry.excerpt && (
+                              <p className="text-[11px] text-[var(--studio-muted)] line-clamp-2">
+                                {entry.excerpt}
+                              </p>
+                            )}
+                            {entry.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 pt-0.5">
+                                {entry.tags.slice(0, 3).map((t) => (
+                                  <span
+                                    key={t}
+                                    className="px-1.5 py-0.2 rounded bg-black/5 dark:bg-white/10 text-[10px] text-[var(--studio-muted)]"
+                                  >
+                                    #{t}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      onClick={() =>
+                        onCreateEntry(
+                          entityType.id,
+                          col.value ? { [activeBoardField.key]: col.value } : undefined
+                        )
+                      }
+                      className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add {entityType.name}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : (
