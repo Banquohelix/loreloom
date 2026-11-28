@@ -30,7 +30,7 @@ A clean, Notion-style desktop studio for **worldbuilding notes and concept art**
 - **Concept Art Gallery, Lightbox & Auto-Linker**: Drag-and-drop art uploads, category filtering (*Characters, Environments, Props, Mood, Maps*), fullscreen zoomable lightbox, bidirectional art-to-lore linking, plus a **World Cleanup & Auto-Link** tool to safely merge duplicate entries and auto-attach matching concept art.
 - **Per-World Intake Folder Sync & AI Prompt Framework**: Link external project folders (e.g., `Brimstone`, `Neon Ash`) where you drop Gemini, ChatGPT, or Claude notes and AI art; Loreloom watches them live, auto-sorts new files into the right categories, includes a dynamic per-World **AI Prompt Framework** generator, and offers **Re-run Auto-Sorter** + **Bulk Triage** for ambiguous items.
 - **Non-Destructive Obsidian Vault Importer**: Imports existing Obsidian story vaults (folders, Markdown notes, YAML frontmatter with synonym normalization, `[[wikilinks]]`, `#tags`, and `![[embedded images]]`) into a Loreloom World without modifying your original vault.
-- **Command Palette (`Ctrl+K`), Custom Desktop Icon & In-App Updates**: Search across all Worlds or run any Studio action from `Ctrl+K`, and check/install signed upgrades directly from the sidebar (`v0.6.9`).
+- **Command Palette (`Ctrl+K`), Custom Desktop Icon & In-App Updates**: Search across all Worlds or run any Studio action from `Ctrl+K`, and check/install signed upgrades directly from the sidebar (`v0.6.10`).
 
 ## Development Commands
 
