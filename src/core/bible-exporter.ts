@@ -3,6 +3,7 @@ import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { Marked } from 'marked';
 import { calloutLabel, calloutMarkedExtension } from '../shared/callouts';
+import { formatPropertyValue, parseLinkValue } from '../shared/entity-type-utils';
 import { resolveWorldTokens } from './theme-engine';
 import type { WorkspaceStore } from './workspace-store';
 import type {
@@ -352,9 +353,28 @@ async function renderWorldBible(
         imageUri(entry.portraitAssetId, 'portrait'),
         renderMarkdown(entry.body),
       ]);
-      const propPairs = Object.entries(entry.properties).filter(
-        ([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0)
-      );
+      const typeDef = world.entityTypes.find((t) => t.id === entry.type);
+      // Label, and HTML value: relation links become anchors, checkboxes "Yes", empty values are skipped
+      const propPairs = Object.entries(entry.properties)
+        .map(([k, v]) => {
+          const field = typeDef?.fields.find((f) => f.key === k);
+          const label = field?.label ?? k;
+          if (field?.fieldType === 'checkbox') return formatPropertyValue(field, v) ? [label, 'Yes'] : null;
+          const items = (Array.isArray(v) ? v : [v]).filter((x) => x !== undefined && x !== '');
+          if (items.length === 0) return null;
+          const html = items
+            .map((item) => {
+              if (typeof item === 'string' && item.includes('[[')) {
+                const { target, label: text } = parseLinkValue(item);
+                const anchor = anchorByKey.get(target.toLowerCase());
+                return anchor ? `<a href="#${anchor}">${escapeHtml(text)}</a>` : escapeHtml(text);
+              }
+              return escapeHtml(formatPropertyValue(field, item as never) || String(item));
+            })
+            .join(', ');
+          return [label, html];
+        })
+        .filter((p): p is [string, string] => p !== null);
       await emit(`
           <article class="entry-card" id="entry-${escapeHtml(entry.id)}">
             ${coverUri ? `<img class="entry-cover" src="${coverUri}" alt="${escapeHtml(entry.title)}" />` : ''}
@@ -377,10 +397,7 @@ async function renderWorldBible(
                 propPairs.length > 0
                   ? `<dl class="prop-grid">${propPairs
                       .map(
-                        ([k, v]) =>
-                          `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(
-                            Array.isArray(v) ? v.join(', ') : String(v)
-                          )}</dd></div>`
+                        ([label, html]) => `<div><dt>${escapeHtml(label)}</dt><dd>${html}</dd></div>`
                       )
                       .join('')}</dl>`
                   : ''

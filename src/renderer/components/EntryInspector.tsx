@@ -9,7 +9,9 @@ import type {
   PropertyFieldDef,
   WorldConfig,
 } from '@shared/types';
-import { coercePropertyInput, readPropertyValue } from '@shared/entity-type-utils';
+import { coercePropertyInput, readPropertyValue, safeExternalUrl } from '@shared/entity-type-utils';
+import { getBridge } from '../lib/bridge';
+import { RelationField } from './RelationField';
 
 /** Text property input that commits on blur, Enter, or unmount, so edits are never dropped. */
 function PropertyTextInput({
@@ -150,7 +152,7 @@ export function EntryInspector({
   };
 
   /** Saves a schema field, typed: numbers as numbers, multi-select as lists; empty removes the key. */
-  const handleFieldChange = (field: PropertyFieldDef, raw: string | string[]) => {
+  const handleFieldChange = (field: PropertyFieldDef, raw: string | string[] | boolean) => {
     const next = { ...entry.properties };
     const value = coercePropertyInput(field, raw);
     if (value === undefined) delete next[field.key];
@@ -239,7 +241,51 @@ export function EntryInspector({
                 <label htmlFor={inputId} className="block text-xs text-[var(--studio-muted)] mb-1">
                   {field.label}
                 </label>
-                {field.fieldType === 'select' && field.options?.length ? (
+                {field.fieldType === 'checkbox' ? (
+                  <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                    <input
+                      id={inputId}
+                      type="checkbox"
+                      checked={val === true}
+                      onChange={(e) => handleFieldChange(field, e.target.checked)}
+                      className="w-3.5 h-3.5 accent-[var(--world-accent)] cursor-pointer"
+                    />
+                    <span className="text-[var(--studio-muted)]">{val === true ? 'Yes' : 'No'}</span>
+                  </label>
+                ) : field.fieldType === 'relation' ? (
+                  <RelationField
+                    id={inputId}
+                    field={field}
+                    values={(val as string[] | undefined) ?? []}
+                    world={world}
+                    allEntries={allEntries}
+                    currentEntryId={entry.id}
+                    onChange={(next) => handleFieldChange(field, next)}
+                    onNavigateEntry={onNavigateEntry}
+                    onCreateStubEntry={onCreateStubEntry}
+                  />
+                ) : field.fieldType === 'url' ? (
+                  <div className="flex items-center gap-1.5">
+                    <PropertyTextInput
+                      key={`${entry.id}-${field.key}-${strVal}`}
+                      initialValue={strVal}
+                      ariaLabel={field.label}
+                      onCommit={(value) => handleFieldChange(field, value)}
+                      placeholder="https://…"
+                    />
+                    {safeExternalUrl(strVal) && (
+                      <button
+                        type="button"
+                        title={`Open ${safeExternalUrl(strVal)}`}
+                        aria-label={`Open ${field.label} link`}
+                        onClick={() => getBridge().openExternalUrl(safeExternalUrl(strVal)!)}
+                        className="p-1.5 rounded-lg border border-[var(--studio-border)] text-[var(--studio-muted)] hover:text-[var(--studio-text)] cursor-pointer shrink-0"
+                      >
+                        <ArrowUpRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                ) : field.fieldType === 'select' && field.options?.length ? (
                   <select
                     id={inputId}
                     value={strVal}

@@ -7,6 +7,7 @@ import type {
   EntrySummary,
   WorldConfig,
 } from '@shared/types';
+import { formatPropertyValue } from '@shared/entity-type-utils';
 import { groupEntriesForTimeline } from '@shared/timeline-utils';
 import {
   getBoardGroupableFields,
@@ -265,14 +266,14 @@ export function CollectionView({
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {entityType.fields.slice(0, 2).map((f) => {
-                        const val = entry.properties[f.key];
+                        const val = formatPropertyValue(f, entry.properties[f.key]);
                         if (!val) return null;
                         return (
                           <span
                             key={f.key}
                             className="text-[10px] px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/10 text-[var(--studio-muted)]"
                           >
-                            {f.label}: {String(val)}
+                            {f.fieldType === 'checkbox' ? f.label : `${f.label}: ${val}`}
                           </span>
                         );
                       })}
@@ -567,7 +568,7 @@ export function CollectionView({
                     <td className="py-3 px-4 font-medium">{entry.title}</td>
                     {entityType.fields.slice(0, 3).map((f) => (
                       <td key={f.key} className="py-3 px-4 text-[var(--studio-muted)]">
-                        {entry.properties[f.key] ? String(entry.properties[f.key]) : '—'}
+                        {formatPropertyValue(f, entry.properties[f.key]) || '—'}
                       </td>
                     ))}
                     <td className="py-3 px-4">

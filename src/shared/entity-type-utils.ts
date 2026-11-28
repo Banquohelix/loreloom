@@ -6,6 +6,9 @@ export const PROPERTY_FIELD_TYPES: Array<{ id: PropertyFieldType; label: string 
   { id: 'date', label: 'Date' },
   { id: 'select', label: 'Select' },
   { id: 'multi-select', label: 'Multi-select' },
+  { id: 'checkbox', label: 'Checkbox' },
+  { id: 'url', label: 'URL' },
+  { id: 'relation', label: 'Relation (links to entries)' },
 ];
 
 function slug(input: string, sep: string): string {
@@ -33,6 +36,8 @@ export interface FieldDraft {
   fieldType: PropertyFieldType;
   /** Comma-separated options for select / multi-select. */
   optionsText: string;
+  /** Relation fields: entity types it may link to (empty = any). */
+  targetTypes?: string[];
 }
 
 /**
@@ -55,6 +60,9 @@ export function finalizeFields(drafts: FieldDraft[]): PropertyFieldDef[] {
       const options = Array.from(new Set(d.optionsText.split(',').map((o) => o.trim()).filter(Boolean)));
       if (options.length > 0) field.options = options;
     }
+    if (d.fieldType === 'relation' && d.targetTypes && d.targetTypes.length > 0) {
+      field.targetTypes = Array.from(new Set(d.targetTypes));
+    }
     out.push(field);
   });
   return out;
@@ -66,7 +74,41 @@ export function toFieldDraft(field: PropertyFieldDef): FieldDraft {
     label: field.label,
     fieldType: field.fieldType,
     optionsText: (field.options ?? []).join(', '),
+    targetTypes: field.targetTypes ? [...field.targetTypes] : [],
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Relation values are stored like Obsidian link properties: a list of "[[Entry Title]]" strings.
+
+const LINK_VALUE = /^\s*\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]\s*$/;
+
+/** `[[Kael Vorn|Kael]]` → { target: 'Kael Vorn', label: 'Kael' }; plain text → { target: text }. */
+export function parseLinkValue(value: string): { target: string; label: string } {
+  const m = LINK_VALUE.exec(value);
+  if (!m) return { target: value.trim(), label: value.trim() };
+  const target = m[1].trim();
+  return { target, label: (m[2] ?? '').trim() || target };
+}
+
+export function toLinkValue(title: string): string {
+  return `[[${title.replace(/[[\]|]/g, '').trim()}]]`;
+}
+
+function truthy(value: EntryPropertyValue): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return /^(true|yes|y|1|x|✓)$/i.test(String(value).trim());
+}
+
+function toList(value: EntryPropertyValue): string[] {
+  return Array.isArray(value)
+    ? value.map(String).filter((v) => v.trim())
+    : String(value)
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
 }
 
 /** Normalizes a stored property value for display in a field of the given type. */
@@ -74,33 +116,66 @@ export function readPropertyValue(field: PropertyFieldDef, value: EntryPropertyV
   if (value === undefined || value === '') return undefined;
   switch (field.fieldType) {
     case 'multi-select':
-      return Array.isArray(value)
-        ? value
-        : String(value)
-            .split(',')
-            .map((v) => v.trim())
-            .filter(Boolean);
+      return toList(value);
+    case 'relation':
+      // A single "[[A]], [[B]]" string (hand-edited) reads as two links
+      return Array.isArray(value) ? value.map(String).filter((v) => v.trim()) : String(value).match(/\[\[[^\]]+\]\]/g) ?? toList(value);
     case 'number': {
       const n = typeof value === 'number' ? value : Number(String(value).trim());
       return Number.isFinite(n) ? n : String(value);
     }
+    case 'checkbox':
+      return truthy(value);
     default:
       return Array.isArray(value) ? value.join(', ') : value;
   }
 }
 
-/** Converts an input's raw value into what gets saved (numbers as numbers, multi-select as arrays). */
-export function coercePropertyInput(field: PropertyFieldDef, raw: string | string[]): EntryPropertyValue | undefined {
-  if (Array.isArray(raw)) return raw.length > 0 ? raw : undefined;
+/**
+ * Converts an input's raw value into what gets saved: numbers as numbers, multi-select and
+ * relation as lists, checkboxes as `true` (unchecked removes the key). `undefined` = remove.
+ */
+export function coercePropertyInput(
+  field: PropertyFieldDef,
+  raw: string | string[] | boolean
+): EntryPropertyValue | undefined {
+  if (field.fieldType === 'checkbox') {
+    return (typeof raw === 'boolean' ? raw : truthy(raw)) ? true : undefined;
+  }
+  if (typeof raw === 'boolean') return raw ? 'true' : undefined;
+  if (Array.isArray(raw)) {
+    const list = raw.map((v) => v.trim()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  }
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   if (field.fieldType === 'number') {
     const n = Number(trimmed);
     return Number.isFinite(n) ? n : trimmed;
   }
-  if (field.fieldType === 'multi-select') {
+  if (field.fieldType === 'multi-select' || field.fieldType === 'relation') {
     const list = trimmed.split(',').map((v) => v.trim()).filter(Boolean);
     return list.length > 0 ? list : undefined;
   }
   return trimmed;
+}
+
+/** Only http(s) links are opened from a URL property (the main process refuses anything else). */
+export function safeExternalUrl(value: string): string | null {
+  const v = value.trim();
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(v)) return `https://${v}`;
+  return null;
+}
+
+/** Short plain-text form of a value for tables, cards and exports. */
+export function formatPropertyValue(field: PropertyFieldDef | undefined, value: EntryPropertyValue | undefined): string {
+  if (value === undefined || value === '') return '';
+  if (field?.fieldType === 'checkbox') return truthy(value) ? '✓' : '';
+  const read = field ? readPropertyValue(field, value) : value;
+  if (read === undefined) return '';
+  const list = Array.isArray(read) ? read : [read];
+  return list
+    .map((v) => (typeof v === 'string' && v.includes('[[') ? parseLinkValue(v).label : String(v)))
+    .join(', ');
 }
