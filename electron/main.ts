@@ -41,6 +41,11 @@ import type {
   WorkspaceExternalChangeEvent,
 } from '../src/shared/types';
 
+// Test/dev isolation: run against a separate settings folder (and therefore a separate workspace)
+if (process.env.LORELOOM_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(process.env.LORELOOM_USER_DATA_DIR));
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'loreloom-asset',
@@ -807,7 +812,7 @@ function registerIpcHandlers(): void {
         await win.loadFile(tempHtmlPath);
         const pdfBuffer = await win.webContents.printToPDF({
           printBackground: true,
-          margins: { marginType: 'default' },
+          margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
         });
         await fs.writeFile(saveRes.filePath, pdfBuffer);
       } finally {
