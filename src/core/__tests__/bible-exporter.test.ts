@@ -62,11 +62,12 @@ describe('WorldBibleExporter', () => {
   it('streams to a file with per-use resized art and skips art that has not synced', async () => {
     const world = await store.createWorld({ name: 'Brimstone Story Vault', medium: 'novel' });
     const art = await store.saveArtAssetFromBuffer(world.slug, 'ash-sea.png', Buffer.from('png-bytes'));
-    const manifest = path.join(store.worldDir(world.slug), 'art-manifest.yaml');
-    await fs.appendFile(
-      manifest,
-      "  - id: ghost\n    worldSlug: brimstone-story-vault\n    filename: not-synced.png\n    relativePath: assets/not-synced.png\n    title: Ghost\n    category: other\n    tags: []\n    caption: ''\n    createdAt: '2026-01-01T00:00:00.000Z'\n"
+    // A record whose image hasn't synced to this PC yet
+    await fs.writeFile(
+      path.join(store.recordsDir(world.slug, 'art'), 'ghost.yaml'),
+      "id: ghost\nworldSlug: brimstone-story-vault\nfilename: not-synced.png\nrelativePath: assets/not-synced.png\ntitle: Ghost\ncategory: other\ntags: []\ncaption: ''\ncreatedAt: '2026-01-01T00:00:00.000Z'\n"
     );
+    expect((await store.listArtAssets(world.slug)).find((a) => a.id === 'ghost')?.missing).toBe(true);
     await store.createEntry({
       worldSlug: world.slug,
       title: 'Kael',

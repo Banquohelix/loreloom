@@ -8,11 +8,14 @@ import { normalizeBodyForCompare, repairEscapedWikilinks } from '../shared/wikil
 import { getDefaultWorldTheme } from './theme-engine';
 import { KeyedMutex } from './keyed-mutex';
 import { assertSafeSegment, resolveInside, withFsRetry } from './fs-safety';
+import { atomicWriteFile, exists, fileWriteObserver, moveToTrash, trashStamp } from './fs-io';
+import { RecordFolder } from './record-folder';
 import type {
   ArtAsset,
   ArtCategory,
   CreateEntryInput,
   CreateWorldInput,
+  EntityTypeDef,
   Entry,
   EntryPropertyValue,
   EntryRelationship,
@@ -24,6 +27,44 @@ import type {
   WorldConfig,
   WorldMapDef,
 } from '../shared/types';
+
+export { fileWriteObserver };
+
+/**
+ * On-disk layout version of a World. Version 2 stores art, maps, moodboards and entity types as
+ * one file per record under `<world>/records/` instead of shared manifests. A World written by a
+ * newer Loreloom (higher version) is opened read-only so this version can't damage it.
+ */
+export const WORLD_FORMAT_VERSION = 2;
+
+export type RecordKind = 'art' | 'maps' | 'boards' | 'types';
+
+/** Shared manifests used by Loreloom <= 0.6.8, absorbed into per-record files on sight. */
+const LEGACY_MANIFESTS: Record<Exclude<RecordKind, 'types'>, string> = {
+  art: 'art-manifest.yaml',
+  maps: 'maps.yaml',
+  boards: 'boards.yaml',
+};
+export const LEGACY_MANIFEST_FILES = new Set(Object.values(LEGACY_MANIFESTS));
+
+type TypeRecord = EntityTypeDef & { order?: number };
+
+export interface RecordMigrationReport {
+  art: number;
+  maps: number;
+  boards: number;
+  types: number;
+  legacyFilesRetired: string[];
+}
+
+/** Stable ID for an image found in `assets/` without a record, so two PCs can't mint two IDs. */
+function discoveredAssetId(worldSlug: string, filename: string): string {
+  return `img-${crypto.createHash('sha1').update(`${worldSlug}/${filename}`).digest('hex').slice(0, 16)}`;
+}
+
+function newerByUpdatedAt<T extends { updatedAt?: string }>(a: T, b: T): T {
+  return String(b.updatedAt ?? '') > String(a.updatedAt ?? '') ? b : a;
+}
 
 export function slugify(input: string): string {
   const base = input
@@ -46,42 +87,6 @@ export function extractExcerpt(markdown: string, maxLength = 180): string {
     .trim();
   if (stripped.length <= maxLength) return stripped;
   return `${stripped.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-async function exists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Observes files Loreloom itself writes or removes, so the workspace watcher can ignore its own
- * echoes instead of re-indexing and refreshing the UI after every save.
- */
-export const fileWriteObserver: { onWrite: ((absPath: string) => void) | null } = { onWrite: null };
-
-function notifyWrite(absPath: string): void {
-  try {
-    fileWriteObserver.onWrite?.(path.resolve(absPath));
-  } catch {
-    // Observer failures must never break a save
-  }
-}
-
-async function atomicWriteFile(filePath: string, content: string | Buffer): Promise<void> {
-  notifyWrite(filePath);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  await fs.writeFile(tempPath, content);
-  try {
-    await withFsRetry(() => fs.rename(tempPath, filePath));
-  } catch (err) {
-    await fs.unlink(tempPath).catch(() => {});
-    throw err;
-  }
 }
 
 /** Frontmatter keys Loreloom manages itself; everything else is preserved verbatim. */
@@ -115,36 +120,6 @@ function normalizeYamlValue(value: unknown): unknown {
   return value;
 }
 
-function trashStamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-/** Moves a file or folder into a trash folder instead of deleting it permanently. */
-async function moveToTrash(sourcePath: string, trashDir: string, name: string): Promise<string> {
-  await fs.mkdir(trashDir, { recursive: true });
-  const dest = path.join(trashDir, `${trashStamp()}__${name}`);
-  notifyWrite(sourcePath);
-  try {
-    await withFsRetry(() => fs.rename(sourcePath, dest));
-  } catch {
-    // Fallback for cross-device or locked folders: copy then remove
-    await fs.cp(sourcePath, dest, { recursive: true });
-    await withFsRetry(() => fs.rm(sourcePath, { recursive: true, force: true }));
-  }
-  return dest;
-}
-
-interface ArtManifestFile {
-  assets: ArtAsset[];
-}
-
-interface MapsManifestFile {
-  maps: WorldMapDef[];
-}
-
-interface BoardsManifestFile {
-  boards: MoodboardDef[];
-}
 
 /**
  * Deep module managing the on-disk OneDrive/Google Drive Workspace folder.
@@ -157,7 +132,10 @@ export class WorkspaceStore {
   constructor(public readonly rootPath: string) {}
 
   /** `<world>/.trash/<kind>` — ignored by the watcher, kept in the synced folder so it can be restored. */
-  public worldTrashDir(worldSlug: string, kind: 'entries' | 'assets' | 'maps' | 'boards'): string {
+  public worldTrashDir(
+    worldSlug: string,
+    kind: 'entries' | 'assets' | 'maps' | 'boards' | 'types' | 'migrated'
+  ): string {
     return path.join(this.worldDir(worldSlug), '.trash', kind);
   }
 
@@ -185,16 +163,182 @@ export class WorkspaceStore {
     return path.join(this.worldDir(worldSlug), 'assets');
   }
 
-  private artManifestPath(worldSlug: string): string {
-    return path.join(this.worldDir(worldSlug), 'art-manifest.yaml');
+  private legacyManifestPath(worldSlug: string, kind: Exclude<RecordKind, 'types'>): string {
+    return path.join(this.worldDir(worldSlug), LEGACY_MANIFESTS[kind]);
   }
 
-  private mapsManifestPath(worldSlug: string): string {
-    return path.join(this.worldDir(worldSlug), 'maps.yaml');
+  /** `<world>/records/<kind>/` — one YAML file per art asset, map, moodboard or entity type. */
+  public recordsDir(worldSlug: string, kind: RecordKind): string {
+    return path.join(this.worldDir(worldSlug), 'records', kind);
   }
 
-  private boardsManifestPath(worldSlug: string): string {
-    return path.join(this.worldDir(worldSlug), 'boards.yaml');
+  private artRecords(worldSlug: string): RecordFolder<ArtAsset> {
+    return new RecordFolder<ArtAsset>(this.recordsDir(worldSlug, 'art'));
+  }
+
+  private mapRecords(worldSlug: string): RecordFolder<WorldMapDef> {
+    return new RecordFolder<WorldMapDef>(this.recordsDir(worldSlug, 'maps'));
+  }
+
+  private boardRecords(worldSlug: string): RecordFolder<MoodboardDef> {
+    return new RecordFolder<MoodboardDef>(this.recordsDir(worldSlug, 'boards'));
+  }
+
+  private typeRecords(worldSlug: string): RecordFolder<TypeRecord> {
+    return new RecordFolder<TypeRecord>(this.recordsDir(worldSlug, 'types'));
+  }
+
+  private async readWorldYaml(worldSlug: string): Promise<Record<string, unknown> | null> {
+    const cfgPath = this.worldConfigPath(worldSlug);
+    if (!(await exists(cfgPath))) return null;
+    const parsed = yaml.load(await withFsRetry(() => fs.readFile(cfgPath, 'utf8')));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  }
+
+  /** Throws if the World was written by a newer Loreloom whose layout this version doesn't know. */
+  private async assertWritable(worldSlug: string): Promise<void> {
+    const raw = await this.readWorldYaml(worldSlug).catch(() => null);
+    const version = Number(raw?.formatVersion ?? 1);
+    if (version > WORLD_FORMAT_VERSION) {
+      throw new Error(
+        `This World was saved by a newer version of Loreloom (format ${version}). Update Loreloom on this PC to edit it.`
+      );
+    }
+  }
+
+  /** Entity types in display order. Falls back to legacy `world.yaml` types, then the starter set. */
+  private async readEntityTypes(worldSlug: string, raw: Record<string, unknown>): Promise<EntityTypeDef[]> {
+    const records = await this.typeRecords(worldSlug).list().catch(() => [] as TypeRecord[]);
+    if (records.length > 0) {
+      return records
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name))
+        .map(({ order: _order, ...type }) => type);
+    }
+    if (Array.isArray(raw.entityTypes) && raw.entityTypes.length > 0) return raw.entityTypes as EntityTypeDef[];
+    return cloneStarterEntityTypes();
+  }
+
+  /** Writes changed/new type records and moves removed ones to `.trash/types/`. */
+  private async writeEntityTypes(worldSlug: string, next: EntityTypeDef[]): Promise<void> {
+    const folder = this.typeRecords(worldSlug);
+    const existing = await folder.list();
+    const orderById = new Map(existing.map((t) => [t.id, t.order ?? 0]));
+    let maxOrder = existing.reduce((m, t) => Math.max(m, t.order ?? 0), -1);
+    for (const type of next) {
+      const order = orderById.get(type.id) ?? ++maxOrder;
+      await folder.put({ ...type, order });
+    }
+    const keep = new Set(next.map((t) => t.id));
+    for (const old of existing) {
+      if (!keep.has(old.id)) await folder.remove(old.id, this.worldTrashDir(worldSlug, 'types'));
+    }
+  }
+
+  /**
+   * Moves a World from shared manifests (Loreloom <= 0.6.8) to one file per record, and absorbs
+   * any manifest an older Loreloom on another PC writes later. Records already on disk win, except
+   * a map or board whose legacy copy has a newer `updatedAt`. Retired manifests are kept in
+   * `<world>/.trash/migrated/`. Safe to run any number of times, on any number of PCs.
+   */
+  async migrateWorldRecords(worldSlug: string): Promise<RecordMigrationReport> {
+    return this.locks.run(`migrate:${worldSlug}`, async () => {
+      const report: RecordMigrationReport = { art: 0, maps: 0, boards: 0, types: 0, legacyFilesRetired: [] };
+      const raw = await this.readWorldYaml(worldSlug);
+      if (!raw) return report;
+      if (Number(raw.formatVersion ?? 1) > WORLD_FORMAT_VERSION) return report;
+      const retire = async (kind: Exclude<RecordKind, 'types'>) => {
+        await moveToTrash(
+          this.legacyManifestPath(worldSlug, kind),
+          this.worldTrashDir(worldSlug, 'migrated'),
+          LEGACY_MANIFESTS[kind]
+        );
+        report.legacyFilesRetired.push(LEGACY_MANIFESTS[kind]);
+      };
+      const readLegacy = async (kind: Exclude<RecordKind, 'types'>, key: string): Promise<unknown[] | null> => {
+        const file = this.legacyManifestPath(worldSlug, kind);
+        if (!(await exists(file))) return null;
+        try {
+          const parsed = yaml.load(await withFsRetry(() => fs.readFile(file, 'utf8')));
+          if (parsed === null || parsed === undefined) return [];
+          const list = (parsed as Record<string, unknown>)[key];
+          return Array.isArray(list) ? list : null;
+        } catch {
+          return null; // Malformed or locked: leave it in place and try again later
+        }
+      };
+
+      await this.locks.run(`art:${worldSlug}`, async () => {
+        const legacy = (await readLegacy('art', 'assets')) as ArtAsset[] | null;
+        if (!legacy) return;
+        const folder = this.artRecords(worldSlug);
+        const current = await folder.list();
+        const ids = new Set(current.map((a) => a.id));
+        const filenames = new Set(current.map((a) => a.filename));
+        for (const asset of legacy) {
+          if (!asset || typeof asset.id !== 'string' || ids.has(asset.id) || filenames.has(asset.filename)) continue;
+          const { missing: _missing, ...clean } = asset;
+          await folder.put({ ...clean, worldSlug });
+          ids.add(asset.id);
+          filenames.add(asset.filename);
+          report.art++;
+        }
+        await retire('art');
+      });
+
+      for (const kind of ['maps', 'boards'] as const) {
+        await this.locks.run(`${kind}:${worldSlug}`, async () => {
+          const legacy = (await readLegacy(kind, kind)) as Array<WorldMapDef | MoodboardDef> | null;
+          if (!legacy) return;
+          const folder = (kind === 'maps' ? this.mapRecords(worldSlug) : this.boardRecords(worldSlug)) as RecordFolder<
+            WorldMapDef | MoodboardDef
+          >;
+          const current = new Map((await folder.list()).map((r) => [r.id, r]));
+          for (const rec of legacy) {
+            if (!rec || typeof rec.id !== 'string') continue;
+            const mine = current.get(rec.id);
+            const winner = mine ? newerByUpdatedAt(mine, rec) : rec;
+            if (winner !== mine && (await folder.put({ ...winner, worldSlug }))) report[kind]++;
+          }
+          await retire(kind);
+        });
+      }
+
+      await this.locks.run(`world:${worldSlug}`, async () => {
+        const fresh = (await this.readWorldYaml(worldSlug)) ?? raw;
+        const legacyTypes = Array.isArray(fresh.entityTypes) ? (fresh.entityTypes as EntityTypeDef[]) : null;
+        if (legacyTypes) {
+          await this.locks.run(`types:${worldSlug}`, async () => {
+            const folder = this.typeRecords(worldSlug);
+            const existing = await folder.list();
+            const known = new Set(existing.map((t) => t.id));
+            let maxOrder = existing.reduce((m, t) => Math.max(m, t.order ?? 0), -1);
+            for (const type of legacyTypes) {
+              if (!type || typeof type.id !== 'string' || known.has(type.id)) continue;
+              await folder.put({ ...type, order: ++maxOrder });
+              known.add(type.id);
+              report.types++;
+            }
+          });
+        }
+        if (legacyTypes || Number(fresh.formatVersion ?? 1) < WORLD_FORMAT_VERSION) {
+          const { entityTypes: _types, ...rest } = fresh;
+          await atomicWriteFile(
+            this.worldConfigPath(worldSlug),
+            yaml.dump({ ...rest, formatVersion: WORLD_FORMAT_VERSION })
+          );
+        }
+      });
+
+      return report;
+    });
+  }
+
+  private async absorbLegacy(worldSlug: string, kind: Exclude<RecordKind, 'types'>): Promise<void> {
+    if (await exists(this.legacyManifestPath(worldSlug, kind))) {
+      await this.migrateWorldRecords(worldSlug).catch(() => undefined);
+    }
   }
 
   async ensureInitialized(defaultName = 'Loreloom Workspace'): Promise<WorkspaceState> {
@@ -240,17 +384,19 @@ export class WorkspaceStore {
       const cfgPath = this.worldConfigPath(dirent.name);
       if (!(await exists(cfgPath))) continue;
       try {
-        const raw = await fs.readFile(cfgPath, 'utf8');
-        const parsed = yaml.load(raw) as WorldConfig;
+        let parsed = await this.readWorldYaml(dirent.name);
+        if (parsed && Array.isArray(parsed.entityTypes)) {
+          // Written by Loreloom <= 0.6.8 (here or on another PC): move its types to records
+          await this.migrateWorldRecords(dirent.name).catch(() => undefined);
+          parsed = (await this.readWorldYaml(dirent.name).catch(() => null)) ?? parsed;
+        }
         if (parsed && parsed.name) {
+          const { entityTypes: _legacyTypes, ...config } = parsed as unknown as WorldConfig;
           worlds.push({
-            ...parsed,
+            ...config,
             slug: dirent.name,
-            entityTypes:
-              Array.isArray(parsed.entityTypes) && parsed.entityTypes.length > 0
-                ? parsed.entityTypes
-                : cloneStarterEntityTypes(),
-            theme: parsed.theme ?? getDefaultWorldTheme('parchment-lorebook'),
+            entityTypes: await this.readEntityTypes(dirent.name, parsed),
+            theme: config.theme ?? getDefaultWorldTheme('parchment-lorebook'),
           });
         }
       } catch {
@@ -284,8 +430,8 @@ export class WorkspaceStore {
 
     await fs.mkdir(this.entriesDir(slug), { recursive: true });
     await fs.mkdir(this.assetsDir(slug), { recursive: true });
-    await atomicWriteFile(this.worldConfigPath(slug), yaml.dump(config));
-    await atomicWriteFile(this.artManifestPath(slug), yaml.dump({ assets: [] } satisfies ArtManifestFile));
+    const { entityTypes: _types, ...onDisk } = config;
+    await atomicWriteFile(this.worldConfigPath(slug), yaml.dump({ ...onDisk, formatVersion: WORLD_FORMAT_VERSION }));
 
     return config;
   }
@@ -294,17 +440,28 @@ export class WorkspaceStore {
     worldSlug: string,
     patch: Partial<Pick<WorldConfig, 'name' | 'subtitle' | 'medium' | 'coverAssetId' | 'theme' | 'entityTypes'>>
   ): Promise<WorldConfig> {
-    const worlds = await this.listWorlds();
-    const current = worlds.find((w) => w.slug === worldSlug);
-    if (!current) {
-      throw new Error(`World not found: ${worldSlug}`);
+    if (!(await this.readWorldYaml(worldSlug))) throw new Error(`World not found: ${worldSlug}`);
+    await this.assertWritable(worldSlug);
+    await this.migrateWorldRecords(worldSlug);
+    const { entityTypes, ...configPatch } = patch;
+
+    if (entityTypes) {
+      await this.locks.run(`types:${worldSlug}`, () => this.writeEntityTypes(worldSlug, entityTypes));
     }
-    const updated: WorldConfig = {
-      ...current,
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
-    await atomicWriteFile(this.worldConfigPath(worldSlug), yaml.dump(updated));
+    // Only touch world.yaml when its own fields change: editing a type must not rewrite it
+    if (Object.keys(configPatch).length > 0) {
+      await this.locks.run(`world:${worldSlug}`, async () => {
+        const raw = (await this.readWorldYaml(worldSlug)) ?? {};
+        const { entityTypes: _legacy, ...rest } = raw;
+        await atomicWriteFile(
+          this.worldConfigPath(worldSlug),
+          yaml.dump({ ...rest, ...configPatch, formatVersion: WORLD_FORMAT_VERSION, updatedAt: new Date().toISOString() })
+        );
+      });
+    }
+
+    const updated = (await this.listWorlds()).find((w) => w.slug === worldSlug);
+    if (!updated) throw new Error(`World not found: ${worldSlug}`);
     return updated;
   }
 
@@ -716,42 +873,31 @@ export class WorkspaceStore {
     });
   }
 
-  private async readArtManifest(worldSlug: string): Promise<ArtAsset[]> {
-    const manifestPath = this.artManifestPath(worldSlug);
-    if (!(await exists(manifestPath))) return [];
-    try {
-      const raw = await fs.readFile(manifestPath, 'utf8');
-      const parsed = yaml.load(raw) as ArtManifestFile | undefined;
-      return parsed && Array.isArray(parsed.assets) ? parsed.assets : [];
-    } catch {
-      return [];
-    }
-  }
-
-  private async writeArtManifest(worldSlug: string, assets: ArtAsset[]): Promise<void> {
-    const clean = assets.map(({ missing: _missing, ...rest }) => rest);
-    await atomicWriteFile(this.artManifestPath(worldSlug), yaml.dump({ assets: clean }));
-  }
-
   /**
-   * Lists art assets. Image files dropped straight into `assets/` are added to the manifest, but
-   * records are NEVER removed on read: on a second PC the manifest often syncs before the images,
+   * Lists art assets. Image files dropped straight into `assets/` get a record, but records are
+   * NEVER removed on read: on a second PC the records often sync before the images,
    * and pruning would permanently erase captions, tags, categories and the IDs Entries link to.
    * Records whose file is not on disk yet are returned with `missing: true`.
    */
   async listArtAssets(worldSlug: string): Promise<ArtAsset[]> {
+    // Absorb a legacy manifest first: migration takes the art lock itself
+    await this.absorbLegacy(worldSlug, 'art');
     return this.locks.run(`art:${worldSlug}`, () => this.listArtAssetsUnlocked(worldSlug));
   }
 
   private async listArtAssetsUnlocked(worldSlug: string): Promise<ArtAsset[]> {
     const assetsFolder = this.assetsDir(worldSlug);
     await fs.mkdir(assetsFolder, { recursive: true });
-    const assets = await this.readArtManifest(worldSlug);
+    const records = this.artRecords(worldSlug);
+    const assets = await records.list();
+    const writable = await this.assertWritable(worldSlug).then(
+      () => true,
+      () => false
+    );
 
     const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif']);
     const filesOnDisk = await fs.readdir(assetsFolder, { withFileTypes: true });
     const knownFilenames = new Set(assets.map((a) => a.filename));
-    let dirty = false;
 
     for (const file of filesOnDisk) {
       if (!file.isFile()) continue;
@@ -759,8 +905,8 @@ export class WorkspaceStore {
       if (!imageExts.has(ext)) continue;
       if (!knownFilenames.has(file.name)) {
         const title = path.basename(file.name, ext).replace(/[-_]+/g, ' ');
-        assets.push({
-          id: crypto.randomUUID(),
+        const discovered: ArtAsset = {
+          id: discoveredAssetId(worldSlug, file.name),
           worldSlug,
           filename: file.name,
           relativePath: `assets/${file.name}`,
@@ -769,13 +915,11 @@ export class WorkspaceStore {
           tags: [],
           caption: '',
           createdAt: new Date().toISOString(),
-        });
-        dirty = true;
+        };
+        assets.push(discovered);
+        knownFilenames.add(file.name);
+        if (writable) await records.put(discovered).catch(() => false);
       }
-    }
-
-    if (dirty) {
-      await this.writeArtManifest(worldSlug, assets);
     }
 
     const diskSet = new Set(filesOnDisk.filter((f) => f.isFile()).map((f) => f.name));
@@ -811,9 +955,8 @@ export class WorkspaceStore {
         filename = `${baseName}-${suffix++}${ext}`;
       }
 
-      // Register in the manifest before the file exists on disk, so a concurrent reconcile
-      // can't create a duplicate record for it.
-      const existing = await this.readArtManifest(worldSlug);
+      await this.assertWritable(worldSlug);
+      // Write the record before the image, so a reconcile on this PC can't mint a second record
       const asset: ArtAsset = {
         id: crypto.randomUUID(),
         worldSlug,
@@ -825,8 +968,8 @@ export class WorkspaceStore {
         caption: '',
         createdAt: new Date().toISOString(),
       };
+      await this.artRecords(worldSlug).put(asset);
       await atomicWriteFile(path.join(assetsFolder, filename), buffer);
-      await this.writeArtManifest(worldSlug, [asset, ...existing.filter((a) => a.filename !== filename)]);
       return asset;
     });
   }
@@ -834,8 +977,8 @@ export class WorkspaceStore {
   /** Replaces an existing asset's image bytes in place, keeping its ID, caption, tags and links. */
   async replaceArtAssetFile(worldSlug: string, assetId: string, sourcePath: string): Promise<ArtAsset | null> {
     return this.locks.run(`art:${worldSlug}`, async () => {
-      const assets = await this.readArtManifest(worldSlug);
-      const target = assets.find((a) => a.id === assetId);
+      await this.assertWritable(worldSlug);
+      const target = await this.artRecords(worldSlug).get(assetId);
       if (!target) return null;
       const buffer = await fs.readFile(sourcePath);
       await atomicWriteFile(path.join(this.assetsDir(worldSlug), target.filename), buffer);
@@ -849,21 +992,22 @@ export class WorkspaceStore {
     patch: Partial<Pick<ArtAsset, 'title' | 'category' | 'tags' | 'caption'>>
   ): Promise<ArtAsset> {
     return this.locks.run(`art:${worldSlug}`, async () => {
-      const assets = await this.readArtManifest(worldSlug);
-      const idx = assets.findIndex((a) => a.id === assetId);
-      if (idx === -1) throw new Error(`Art asset not found: ${assetId}`);
-      const updated: ArtAsset = { ...assets[idx], ...patch };
-      assets[idx] = updated;
-      await this.writeArtManifest(worldSlug, assets);
-      return updated;
+      await this.assertWritable(worldSlug);
+      const records = this.artRecords(worldSlug);
+      const current = await records.get(assetId);
+      if (!current) throw new Error(`Art asset not found: ${assetId}`);
+      const { missing: _missing, ...clean } = { ...current, ...patch };
+      await records.put(clean);
+      return clean;
     });
   }
 
   /** Moves the image and its metadata record to `<world>/.trash/assets/` (restorable). */
   async deleteArtAsset(worldSlug: string, assetId: string): Promise<void> {
     await this.locks.run(`art:${worldSlug}`, async () => {
-      const assets = await this.readArtManifest(worldSlug);
-      const target = assets.find((a) => a.id === assetId);
+      await this.assertWritable(worldSlug);
+      const records = this.artRecords(worldSlug);
+      const target = await records.get(assetId);
       if (!target) return;
       const trashDir = this.worldTrashDir(worldSlug, 'assets');
       const fullPath = path.join(this.assetsDir(worldSlug), target.filename);
@@ -871,10 +1015,7 @@ export class WorkspaceStore {
         const dest = await moveToTrash(fullPath, trashDir, target.filename);
         await atomicWriteFile(`${dest}.meta.yaml`, yaml.dump(target));
       }
-      await this.writeArtManifest(
-        worldSlug,
-        assets.filter((a) => a.id !== assetId)
-      );
+      await records.remove(assetId);
     });
   }
 
@@ -890,10 +1031,11 @@ export class WorkspaceStore {
     return this.locks.run(`maps:${worldSlug}`, () => this.updateMapUnlocked(worldSlug, mapId, patch));
   }
 
-  /** Removes the map from maps.yaml, keeping a restorable copy in `<world>/.trash/maps/`. */
+  /** Removes the map's record, keeping a restorable copy in `<world>/.trash/maps/`. */
   async deleteMap(worldSlug: string, mapId: string): Promise<void> {
     await this.locks.run(`maps:${worldSlug}`, async () => {
-      const target = (await this.listMaps(worldSlug)).find((m) => m.id === mapId);
+      await this.assertWritable(worldSlug);
+      const target = await this.mapRecords(worldSlug).get(mapId);
       if (target) {
         await atomicWriteFile(
           path.join(this.worldTrashDir(worldSlug, 'maps'), `${trashStamp()}__${mapId}.yaml`),
@@ -916,10 +1058,11 @@ export class WorkspaceStore {
     return this.locks.run(`boards:${worldSlug}`, () => this.updateBoardUnlocked(worldSlug, boardId, patch));
   }
 
-  /** Removes the board from boards.yaml, keeping a restorable copy in `<world>/.trash/boards/`. */
+  /** Removes the board's record, keeping a restorable copy in `<world>/.trash/boards/`. */
   async deleteBoard(worldSlug: string, boardId: string): Promise<void> {
     await this.locks.run(`boards:${worldSlug}`, async () => {
-      const target = (await this.listBoards(worldSlug)).find((b) => b.id === boardId);
+      await this.assertWritable(worldSlug);
+      const target = await this.boardRecords(worldSlug).get(boardId);
       if (target) {
         await atomicWriteFile(
           path.join(this.worldTrashDir(worldSlug, 'boards'), `${trashStamp()}__${boardId}.yaml`),
@@ -936,22 +1079,13 @@ export class WorkspaceStore {
   }
 
   async listMaps(worldSlug: string): Promise<WorldMapDef[]> {
-    const manifestPath = this.mapsManifestPath(worldSlug);
-    if (!(await exists(manifestPath))) return [];
-    try {
-      const raw = await fs.readFile(manifestPath, 'utf8');
-      const parsed = yaml.load(raw) as MapsManifestFile | undefined;
-      if (parsed && Array.isArray(parsed.maps)) {
-        return parsed.maps;
-      }
-    } catch {
-      // Ignore malformed maps.yaml
-    }
-    return [];
+    await this.absorbLegacy(worldSlug, 'maps');
+    const maps = await this.mapRecords(worldSlug).list();
+    return maps.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   }
 
   private async createMapUnlocked(worldSlug: string, title: string, assetId: string): Promise<WorldMapDef> {
-    const maps = await this.listMaps(worldSlug);
+    await this.assertWritable(worldSlug);
     const now = new Date().toISOString();
     const created: WorldMapDef = {
       id: crypto.randomUUID(),
@@ -962,8 +1096,7 @@ export class WorkspaceStore {
       createdAt: now,
       updatedAt: now,
     };
-    const next = [...maps, created];
-    await atomicWriteFile(this.mapsManifestPath(worldSlug), yaml.dump({ maps: next } satisfies MapsManifestFile));
+    await this.mapRecords(worldSlug).put(created);
     return created;
   }
 
@@ -972,45 +1105,27 @@ export class WorkspaceStore {
     mapId: string,
     patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
   ): Promise<WorldMapDef> {
-    const maps = await this.listMaps(worldSlug);
-    const idx = maps.findIndex((m) => m.id === mapId);
-    if (idx === -1) throw new Error(`Map not found: ${mapId}`);
-    const updated: WorldMapDef = {
-      ...maps[idx],
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
-    maps[idx] = updated;
-    await atomicWriteFile(this.mapsManifestPath(worldSlug), yaml.dump({ maps } satisfies MapsManifestFile));
+    await this.assertWritable(worldSlug);
+    const records = this.mapRecords(worldSlug);
+    const current = await records.get(mapId);
+    if (!current) throw new Error(`Map not found: ${mapId}`);
+    const updated: WorldMapDef = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    await records.put(updated);
     return updated;
   }
 
   private async deleteMapUnlocked(worldSlug: string, mapId: string): Promise<void> {
-    const maps = await this.listMaps(worldSlug);
-    const remaining = maps.filter((m) => m.id !== mapId);
-    await atomicWriteFile(
-      this.mapsManifestPath(worldSlug),
-      yaml.dump({ maps: remaining } satisfies MapsManifestFile)
-    );
+    await this.mapRecords(worldSlug).remove(mapId);
   }
 
   async listBoards(worldSlug: string): Promise<MoodboardDef[]> {
-    const manifestPath = this.boardsManifestPath(worldSlug);
-    if (!(await exists(manifestPath))) return [];
-    try {
-      const raw = await fs.readFile(manifestPath, 'utf8');
-      const parsed = yaml.load(raw) as BoardsManifestFile | undefined;
-      if (parsed && Array.isArray(parsed.boards)) {
-        return parsed.boards;
-      }
-    } catch {
-      // Ignore malformed boards.yaml
-    }
-    return [];
+    await this.absorbLegacy(worldSlug, 'boards');
+    const boards = await this.boardRecords(worldSlug).list();
+    return boards.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   }
 
   private async createBoardUnlocked(worldSlug: string, title: string): Promise<MoodboardDef> {
-    const boards = await this.listBoards(worldSlug);
+    await this.assertWritable(worldSlug);
     const now = new Date().toISOString();
     const created: MoodboardDef = {
       id: crypto.randomUUID(),
@@ -1020,11 +1135,7 @@ export class WorkspaceStore {
       createdAt: now,
       updatedAt: now,
     };
-    const next = [...boards, created];
-    await atomicWriteFile(
-      this.boardsManifestPath(worldSlug),
-      yaml.dump({ boards: next } satisfies BoardsManifestFile)
-    );
+    await this.boardRecords(worldSlug).put(created);
     return created;
   }
 
@@ -1033,28 +1144,16 @@ export class WorkspaceStore {
     boardId: string,
     patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
   ): Promise<MoodboardDef> {
-    const boards = await this.listBoards(worldSlug);
-    const idx = boards.findIndex((b) => b.id === boardId);
-    if (idx === -1) throw new Error(`Moodboard not found: ${boardId}`);
-    const updated: MoodboardDef = {
-      ...boards[idx],
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
-    boards[idx] = updated;
-    await atomicWriteFile(
-      this.boardsManifestPath(worldSlug),
-      yaml.dump({ boards } satisfies BoardsManifestFile)
-    );
+    await this.assertWritable(worldSlug);
+    const records = this.boardRecords(worldSlug);
+    const current = await records.get(boardId);
+    if (!current) throw new Error(`Moodboard not found: ${boardId}`);
+    const updated: MoodboardDef = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    await records.put(updated);
     return updated;
   }
 
   private async deleteBoardUnlocked(worldSlug: string, boardId: string): Promise<void> {
-    const boards = await this.listBoards(worldSlug);
-    const remaining = boards.filter((b) => b.id !== boardId);
-    await atomicWriteFile(
-      this.boardsManifestPath(worldSlug),
-      yaml.dump({ boards: remaining } satisfies BoardsManifestFile)
-    );
+    await this.boardRecords(worldSlug).remove(boardId);
   }
 }

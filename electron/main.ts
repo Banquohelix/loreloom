@@ -8,7 +8,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
-import { WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
+import { LEGACY_MANIFEST_FILES, WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
 import { IndexEngine, extractWikilinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
@@ -405,6 +405,13 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
         } else if (parts.length === 3 && parts[2] === 'world.yaml') {
           worldsToResync.add(worldSlug);
           kind = 'world';
+        } else if (parts.length === 3 && LEGACY_MANIFEST_FILES.has(parts[2]) && evt !== 'unlink') {
+          // An older Loreloom on another PC wrote a shared manifest: fold it into per-record files
+          await s.migrateWorldRecords(worldSlug);
+          kind = 'world';
+        } else if (parts[2] === 'records') {
+          // records/types/* changes the World's entity types; art, maps and boards refresh views
+          kind = parts[3] === 'types' ? 'world' : 'art';
         } else if (parts[2] === 'entries' && rel.toLowerCase().endsWith('.md')) {
           kind = 'entry';
           const entryRel = parts.slice(3).join('/');
@@ -451,7 +458,9 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
   };
 
   const handle = (evt: WatchEvent) => (changedPath: string) => {
-    if (evt !== 'unlinkDir' && isRecentSelfWrite(changedPath)) return;
+    // Loreloom only ever retires legacy manifests, so one appearing is always another PC's write
+    const legacyManifest = LEGACY_MANIFEST_FILES.has(path.basename(changedPath));
+    if (evt !== 'unlinkDir' && !legacyManifest && isRecentSelfWrite(changedPath)) return;
     pending.set(changedPath, evt);
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -552,6 +561,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('workspace:open', async (_e, rootPath: string) => {
     store = new WorkspaceStore(rootPath);
     const state = await store.ensureInitialized();
+
+    // Move Worlds from shared manifests (<= 0.6.8) to one file per record, so edits on two PCs
+    // stop producing OneDrive conflict copies. Idempotent; a locked file is retried next launch.
+    for (const world of state.worlds) {
+      await store.migrateWorldRecords(world.slug).catch((err) => {
+        console.warn(`Record migration deferred for ${world.slug}:`, err);
+      });
+    }
 
     // Repair `\[\[wikilinks\]\]` escaped by the <= 0.6.5 editor before indexing or intake runs
     if (!wikilinkRepairDone.has(rootPath)) {
