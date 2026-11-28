@@ -364,6 +364,13 @@ export interface UpdateCheckResult {
   message?: string;
 }
 
+/** Two or more files in one World that share the same frontmatter `id` (e.g. a sync conflict copy). */
+export interface DuplicateIdConflict {
+  worldSlug: string;
+  id: string;
+  relativePaths: string[];
+}
+
 export interface DesktopBridge {
   // Workspace lifecycle
   getSavedWorkspacePath: () => Promise<string | null>;
@@ -371,6 +378,8 @@ export interface DesktopBridge {
   pickImageFiles: () => Promise<string[]>;
   openWorkspace: (rootPath: string) => Promise<WorkspaceState>;
   updateWorkspaceConfig: (patch: Partial<WorkspaceConfig>) => Promise<WorkspaceConfig>;
+  /** Re-reads world.yaml files only (cheap), e.g. after a World changed on another PC. */
+  listWorlds: () => Promise<WorldConfig[]>;
   rebuildIndex: () => Promise<{ indexedEntries: number; indexedWorlds: number }>;
 
   // Worlds
@@ -384,6 +393,8 @@ export interface DesktopBridge {
   createEntry: (input: CreateEntryInput) => Promise<Entry>;
   updateEntry: (input: UpdateEntryInput) => Promise<UpdateEntryResult>;
   deleteEntry: (worldSlug: string, id: string) => Promise<void>;
+  /** Rewrites `[[oldTitle]]` links across the World to the entry's current title. */
+  renameEntryLinks: (worldSlug: string, entryId: string, oldTitle: string) => Promise<{ updatedEntries: number }>;
   getBacklinks: (worldSlug: string, entryId: string) => Promise<BacklinkRef[]>;
   getWorldGraph: (worldSlug: string) => Promise<WorldGraph>;
   searchGlobal: (query: string) => Promise<SearchHit[]>;
@@ -429,6 +440,8 @@ export interface DesktopBridge {
     keepEntryId: string,
     removeEntryIds: string[]
   ) => Promise<Entry>;
+  findDuplicateIds: (worldSlug: string) => Promise<DuplicateIdConflict[]>;
+  reassignEntryId: (worldSlug: string, relativePath: string) => Promise<Entry>;
   findArtLinkSuggestions: (worldSlug: string) => Promise<ArtLinkSuggestion[]>;
 
   // Obsidian Vault Importer

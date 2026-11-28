@@ -8,7 +8,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import type { ArtLinkSuggestion, DuplicateGroup, WorldConfig } from '@shared/types';
+import type { ArtLinkSuggestion, DuplicateGroup, DuplicateIdConflict, WorldConfig } from '@shared/types';
 import { getBridge } from '../lib/bridge';
 
 interface WorldToolsModalProps {
@@ -25,14 +25,17 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
   const [keepChoice, setKeepChoice] = useState<Record<string, string>>({});
   const [suggestions, setSuggestions] = useState<ArtLinkSuggestion[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [idConflicts, setIdConflicts] = useState<DuplicateIdConflict[]>([]);
 
   const scan = async () => {
     setLoading(true);
     try {
-      const [dups, art] = await Promise.all([
+      const [dups, art, conflicts] = await Promise.all([
         bridge.findDuplicates(world.slug),
         bridge.findArtLinkSuggestions(world.slug),
+        bridge.findDuplicateIds(world.slug).catch(() => []),
       ]);
+      setIdConflicts(conflicts);
       setDuplicates(dups);
       const defaults: Record<string, string> = {};
       for (const g of dups) {
@@ -48,6 +51,17 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
   useEffect(() => {
     scan();
   }, [world.slug]);
+
+  const handleReassignId = async (relativePath: string) => {
+    setBusyKey(`id::${relativePath}`);
+    try {
+      await bridge.reassignEntryId(world.slug, relativePath);
+      await onRefreshWorld();
+      await scan();
+    } finally {
+      setBusyKey(null);
+    }
+  };
 
   const handleMergeGroup = async (group: DuplicateGroup) => {
     const keepId = keepChoice[group.key] || group.entries[0]?.id;
@@ -195,6 +209,35 @@ The duplicates are moved to the World's .trash/entries folder.`
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto space-y-4">
+          {!loading && idConflicts.length > 0 && (
+            <div className="p-4 rounded-xl border border-red-500/40 bg-red-500/5 space-y-3">
+              <div className="text-sm font-semibold text-red-600 dark:text-red-400">
+                {idConflicts.length} ID {idConflicts.length === 1 ? 'conflict' : 'conflicts'}: files sharing one entry ID
+              </div>
+              <p className="text-xs text-[var(--studio-muted)]">
+                Usually a OneDrive or Google Drive conflict copy. Only one file per ID shows up in collections and search, and
+                links can point at the wrong one. Give the copy a new ID so both appear, then merge or delete it.
+              </p>
+              {idConflicts.map((c) => (
+                <div key={c.id} className="space-y-1.5">
+                  {c.relativePaths.map((rel, i) => (
+                    <div key={rel} className="flex items-center justify-between gap-2 text-xs">
+                      <code className="truncate">{rel}</code>
+                      {i > 0 && (
+                        <button
+                          onClick={() => handleReassignId(rel)}
+                          disabled={busyKey !== null}
+                          className="shrink-0 px-2.5 py-1 rounded-lg border border-[var(--studio-border)] hover:border-red-500/50 font-medium cursor-pointer disabled:opacity-50"
+                        >
+                          {busyKey === `id::${rel}` ? 'Fixing…' : 'Give new ID'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
           {loading ? (
             <div className="py-12 text-center text-xs text-[var(--studio-muted)]">
               Scanning {world.name}…

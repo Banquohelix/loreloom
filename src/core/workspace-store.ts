@@ -57,7 +57,22 @@ async function exists(targetPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Observes files Loreloom itself writes or removes, so the workspace watcher can ignore its own
+ * echoes instead of re-indexing and refreshing the UI after every save.
+ */
+export const fileWriteObserver: { onWrite: ((absPath: string) => void) | null } = { onWrite: null };
+
+function notifyWrite(absPath: string): void {
+  try {
+    fileWriteObserver.onWrite?.(path.resolve(absPath));
+  } catch {
+    // Observer failures must never break a save
+  }
+}
+
 async function atomicWriteFile(filePath: string, content: string | Buffer): Promise<void> {
+  notifyWrite(filePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   await fs.writeFile(tempPath, content);
@@ -108,6 +123,7 @@ function trashStamp(): string {
 async function moveToTrash(sourcePath: string, trashDir: string, name: string): Promise<string> {
   await fs.mkdir(trashDir, { recursive: true });
   const dest = path.join(trashDir, `${trashStamp()}__${name}`);
+  notifyWrite(sourcePath);
   try {
     await withFsRetry(() => fs.rename(sourcePath, dest));
   } catch {
@@ -483,9 +499,52 @@ export class WorkspaceStore {
     return matter.stringify(entry.body || '', frontmatter);
   }
 
+  /**
+   * Optional fast path (set by the app to the LocalIndex): returns the entry's relative path so a
+   * lookup reads one file instead of parsing every file in the World.
+   */
+  private entryLocator: ((worldSlug: string, entryId: string) => string | null) | null = null;
+
+  setEntryLocator(locator: ((worldSlug: string, entryId: string) => string | null) | null): void {
+    this.entryLocator = locator;
+  }
+
   async readEntryById(worldSlug: string, entryId: string): Promise<Entry | null> {
+    const hinted = this.entryLocator?.(worldSlug, entryId);
+    if (hinted) {
+      const entry = await this.readEntryAtRelativePath(worldSlug, hinted);
+      if (entry && entry.id === entryId) return entry;
+    }
     const all = await this.listAllEntriesInWorld(worldSlug);
     return all.find((e) => e.id === entryId) ?? null;
+  }
+
+  /** Parses one entry file by its path relative to `<world>/entries` (null if missing or invalid). */
+  async readEntryAtRelativePath(worldSlug: string, relativePath: string): Promise<Entry | null> {
+    try {
+      const entriesRoot = this.entriesDir(worldSlug);
+      const fullPath = resolveInside(entriesRoot, relativePath);
+      if (!fullPath.toLowerCase().endsWith('.md') || !(await exists(fullPath))) return null;
+      const folderRel = path.relative(entriesRoot, path.dirname(fullPath)).replace(/\\/g, '/');
+      return await this.parseEntryFile(worldSlug, fullPath, folderRel);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Gives the file at `relativePath` a fresh frontmatter `id`. Used to resolve two files that share
+   * one id (typically an OneDrive/Google Drive conflict copy).
+   */
+  async reassignEntryId(worldSlug: string, relativePath: string): Promise<Entry> {
+    const fullPath = resolveInside(this.entriesDir(worldSlug), relativePath);
+    const raw = await fs.readFile(fullPath, 'utf8');
+    const parsed = matter(raw);
+    const newId = crypto.randomUUID();
+    await atomicWriteFile(fullPath, matter.stringify(parsed.content, { ...parsed.data, id: newId }));
+    const entry = await this.readEntryAtRelativePath(worldSlug, relativePath);
+    if (!entry) throw new Error(`Could not re-read ${relativePath}`);
+    return entry;
   }
 
   async createEntry(input: CreateEntryInput): Promise<Entry> {

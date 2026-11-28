@@ -125,6 +125,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
       config = { ...config, ...patch };
       return config;
     },
+    listWorlds: async () => worlds,
     rebuildIndex: async () => ({ indexedEntries: entries.length, indexedWorlds: worlds.length }),
     createWorld: async (input: CreateWorldInput) => {
       const slug = input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'world';
@@ -217,6 +218,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
     deleteEntry: async (_worldSlug, id) => {
       entries = entries.filter((e) => e.id !== id);
     },
+    renameEntryLinks: async () => ({ updatedEntries: 0 }),
     getBacklinks: async (worldSlug, entryId): Promise<BacklinkRef[]> => {
       const target = entries.find((e) => e.id === entryId);
       if (!target) return [];
@@ -353,6 +355,12 @@ function createBrowserPreviewBridge(): DesktopBridge {
     mergeDuplicates: async (_worldSlug, keepEntryId) =>
       entries.find((e) => e.id === keepEntryId)!,
     findArtLinkSuggestions: async () => [],
+    findDuplicateIds: async () => [],
+    reassignEntryId: async (_worldSlug, relativePath) => {
+      const found = entries.find((e) => e.relativePath === relativePath);
+      if (!found) throw new Error('Entry not found');
+      return found;
+    },
     scanObsidianVault: async (vaultPath): Promise<VaultScanPreview> => ({
       vaultPath,
       vaultName: 'Sample Vault',

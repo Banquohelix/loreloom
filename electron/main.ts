@@ -8,8 +8,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
-import { WorkspaceStore } from '../src/core/workspace-store';
-import { IndexEngine } from '../src/core/index-engine';
+import { WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
+import { IndexEngine, extractWikilinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { KeyedMutex } from '../src/core/keyed-mutex';
@@ -279,12 +279,35 @@ function requireIndex(): IndexEngine {
   return indexEngine;
 }
 
+/** Files Loreloom wrote itself in the last few seconds; the watcher ignores their echoes. */
+const recentSelfWrites = new Map<string, number>();
+const SELF_WRITE_WINDOW_MS = 3000;
+fileWriteObserver.onWrite = (absPath) => {
+  recentSelfWrites.set(absPath.toLowerCase(), Date.now() + SELF_WRITE_WINDOW_MS);
+};
+
+function isRecentSelfWrite(absPath: string): boolean {
+  const key = path.resolve(absPath).toLowerCase();
+  const expiry = recentSelfWrites.get(key);
+  if (expiry === undefined) return false;
+  if (expiry > Date.now()) return true;
+  recentSelfWrites.delete(key);
+  return false;
+}
+
+type WatchEvent = 'add' | 'change' | 'unlink' | 'unlinkDir';
+
+/**
+ * Watches the synced Workspace. Changes are batched, Loreloom's own writes are skipped, and only
+ * the files that changed are re-indexed (the old version rebuilt the whole index on every save).
+ */
 async function startWorkspaceWatcher(rootPath: string): Promise<void> {
   if (watcher) {
     await watcher.close();
     watcher = null;
   }
 
+  const pending = new Map<string, WatchEvent>();
   let debounceTimer: NodeJS.Timeout | null = null;
   watcher = chokidar.watch(path.join(rootPath, 'worlds'), {
     ignoreInitial: true,
@@ -292,37 +315,89 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
     awaitWriteFinish: { stabilityThreshold: 350, pollInterval: 100 },
   });
 
-  const handleChange = (changedPath: string) => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(async () => {
-      if (!store || !indexEngine) return;
+  const processBatch = async () => {
+    if (!store || !indexEngine) return;
+    const s = store;
+    const idx = indexEngine;
+    const batch = Array.from(pending.entries());
+    pending.clear();
+
+    const events = new Map<string, WorkspaceExternalChangeEvent>();
+    const worldsToResync = new Set<string>();
+    const removedWorlds = new Set<string>();
+
+    for (const [changedPath, evt] of batch) {
       const rel = path.relative(rootPath, changedPath).replace(/\\/g, '/');
       const parts = rel.split('/');
-      const worldSlug = parts[0] === 'worlds' && parts[1] ? parts[1] : undefined;
+      const worldSlug = parts[0] === 'worlds' ? parts[1] : undefined;
+      if (!worldSlug) continue;
 
-      let kind: WorkspaceExternalChangeEvent['kind'] = 'entry';
-      if (rel.endsWith('world.yaml')) kind = 'world';
-      else if (rel.includes('/assets/') || rel.endsWith('art-manifest.yaml')) kind = 'art';
-
+      let kind: WorkspaceExternalChangeEvent['kind'] = 'art';
       try {
-        await indexEngine.rebuildWorkspace(store);
+        if (parts.length === 2 && evt === 'unlinkDir') {
+          removedWorlds.add(worldSlug);
+          kind = 'world';
+        } else if (parts.length === 3 && parts[2] === 'world.yaml') {
+          worldsToResync.add(worldSlug);
+          kind = 'world';
+        } else if (parts[2] === 'entries' && rel.toLowerCase().endsWith('.md')) {
+          kind = 'entry';
+          const entryRel = parts.slice(3).join('/');
+          if (evt === 'unlink') {
+            idx.removeEntryByPath(worldSlug, entryRel);
+          } else {
+            const entry = await s.readEntryAtRelativePath(worldSlug, entryRel);
+            if (entry) {
+              const indexedPath = idx.getEntryRelativePath(worldSlug, entry.id);
+              if (indexedPath && indexedPath !== entryRel) {
+                // Same id in two files (e.g. a sync conflict copy): rescan to record the duplicate
+                worldsToResync.add(worldSlug);
+              } else {
+                idx.removeEntryByPath(worldSlug, entryRel);
+                idx.upsertEntry(entry);
+              }
+            }
+          }
+        }
       } catch {
-        // Ignore transient OneDrive/Google Drive lock errors
+        // Transient OneDrive/Google Drive locks: the next change event retries this file
+        worldsToResync.add(worldSlug);
       }
+      events.set(`${worldSlug}:${kind}`, { worldSlug, kind, relativePath: rel });
+    }
 
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('workspace:external-change', {
-          worldSlug,
-          kind,
-          relativePath: rel,
-        } satisfies WorkspaceExternalChangeEvent);
+    if (worldsToResync.size > 0 || removedWorlds.size > 0) {
+      const worlds = await s.listWorlds().catch(() => []);
+      for (const slug of removedWorlds) {
+        if (!worlds.some((w) => w.slug === slug)) idx.removeWorld(slug);
       }
+      for (const slug of worldsToResync) {
+        const world = worlds.find((w) => w.slug === slug);
+        if (world) await idx.syncWorld(s, world).catch(() => 0);
+        else idx.removeWorld(slug);
+      }
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      for (const evt of events.values()) {
+        mainWindow.webContents.send('workspace:external-change', evt satisfies WorkspaceExternalChangeEvent);
+      }
+    }
+  };
+
+  const handle = (evt: WatchEvent) => (changedPath: string) => {
+    if (evt !== 'unlinkDir' && isRecentSelfWrite(changedPath)) return;
+    pending.set(changedPath, evt);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      processBatch().catch(() => {});
     }, 450);
   };
 
-  watcher.on('add', handleChange);
-  watcher.on('change', handleChange);
-  watcher.on('unlink', handleChange);
+  watcher.on('add', handle('add'));
+  watcher.on('change', handle('change'));
+  watcher.on('unlink', handle('unlink'));
+  watcher.on('unlinkDir', handle('unlinkDir'));
 }
 
 async function runWorldIntakeSyncAndNotify(worldSlug: string): Promise<IntakeSyncReport> {
@@ -427,6 +502,7 @@ function registerIpcHandlers(): void {
       indexEngine.close();
     }
     indexEngine = new IndexEngine(getIndexDbPath());
+    store.setEntryLocator((worldSlug, entryId) => indexEngine?.getEntryRelativePath(worldSlug, entryId) ?? null);
     await indexEngine.rebuildWorkspace(store);
     await startWorkspaceWatcher(rootPath);
     await refreshIntakeWatchers();
@@ -444,6 +520,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('workspace:update-config', async (_e, patch: Partial<WorkspaceConfig>) => {
     return requireStore().updateWorkspaceConfig(patch);
+  });
+
+  ipcMain.handle('workspace:list-worlds', async () => {
+    return requireStore().listWorlds();
   });
 
   ipcMain.handle('workspace:rebuild-index', async () => {
@@ -464,7 +544,8 @@ function registerIpcHandlers(): void {
       patch: Partial<Pick<WorldConfig, 'name' | 'subtitle' | 'medium' | 'coverAssetId' | 'theme' | 'entityTypes'>>
     ) => {
       const updated = await requireStore().updateWorld(worldSlug, patch);
-      await requireIndex().syncWorld(requireStore(), updated);
+      // Only the World's name lives in the index; theme/type edits don't need a re-scan
+      requireIndex().upsertWorld(updated);
       return updated;
     }
   );
@@ -484,28 +565,60 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('entry:create', async (_e, input: CreateEntryInput) => {
     const created = await requireStore().createEntry(input);
-    const worlds = await requireStore().listWorlds();
-    const world = worlds.find((w) => w.slug === input.worldSlug);
-    requireIndex().upsertEntry(created, world);
+    requireIndex().upsertEntry(created);
     return created;
   });
 
   ipcMain.handle('entry:update', async (_e, input: UpdateEntryInput) => {
     const s = requireStore();
+    const idx = requireIndex();
+    const previousPath = idx.getEntryRelativePath(input.worldSlug, input.id);
     const updated = await s.updateEntry(input);
-    const worlds = await s.listWorlds();
-    const world = worlds.find((w) => w.slug === input.worldSlug);
-    requireIndex().upsertEntry(updated, world);
+    if (previousPath && previousPath !== updated.relativePath) idx.removeEntryByPath(input.worldSlug, previousPath);
+    idx.upsertEntry(updated);
     if (updated.conflictCopy) {
       const copy = await s.readEntryById(input.worldSlug, updated.conflictCopy.id);
-      if (copy) requireIndex().upsertEntry(copy, world);
+      if (copy) idx.upsertEntry(copy);
     }
     return updated;
   });
 
   ipcMain.handle('entry:delete', async (_e, worldSlug: string, id: string) => {
     await requireStore().deleteEntry(worldSlug, id);
-    requireIndex().removeEntry(id);
+    requireIndex().removeEntry(worldSlug, id);
+  });
+
+  // After a rename: point every [[Old Title]] link in the World at the new title
+  ipcMain.handle('entry:rename-links', async (_e, worldSlug: string, entryId: string, oldTitle: string) => {
+    const s = requireStore();
+    const idx = requireIndex();
+    const target = await s.readEntryById(worldSlug, entryId);
+    if (!target || !oldTitle?.trim() || oldTitle.trim() === target.title) return { updatedEntries: 0 };
+    const oldKey = oldTitle.trim().toLowerCase();
+    const candidates = (await s.listAllEntriesInWorld(worldSlug)).filter(
+      (e) => e.id !== entryId && extractWikilinks(e.body).some((l) => l.target.toLowerCase() === oldKey)
+    );
+    let updatedEntries = 0;
+    for (const source of candidates) {
+      const nextBody = rewriteWikilinks(source.body, [oldTitle.trim()], target.title);
+      if (nextBody === source.body) continue;
+      const updated = await s.updateEntry({ worldSlug, id: source.id, body: nextBody, baseBody: source.body });
+      idx.upsertEntry(updated);
+      if (!updated.conflictCopy) updatedEntries++;
+    }
+    return { updatedEntries };
+  });
+
+  ipcMain.handle('hygiene:id-conflicts', async (_e, worldSlug: string) => {
+    return requireIndex().getDuplicateIdConflicts(worldSlug);
+  });
+
+  ipcMain.handle('hygiene:reassign-id', async (_e, worldSlug: string, relativePath: string) => {
+    const s = requireStore();
+    const entry = await s.reassignEntryId(worldSlug, relativePath);
+    const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+    if (world) await requireIndex().syncWorld(s, world);
+    return entry;
   });
 
   ipcMain.handle('entry:backlinks', async (_e, worldSlug: string, entryId: string) => {

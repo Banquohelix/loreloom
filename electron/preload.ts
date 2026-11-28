@@ -11,6 +11,7 @@ const bridge: DesktopBridge = {
   pickImageFiles: () => ipcRenderer.invoke('dialog:pick-images'),
   openWorkspace: (rootPath) => ipcRenderer.invoke('workspace:open', rootPath),
   updateWorkspaceConfig: (patch) => ipcRenderer.invoke('workspace:update-config', patch),
+  listWorlds: () => ipcRenderer.invoke('workspace:list-worlds'),
   rebuildIndex: () => ipcRenderer.invoke('workspace:rebuild-index'),
 
   createWorld: (input) => ipcRenderer.invoke('world:create', input),
@@ -22,6 +23,8 @@ const bridge: DesktopBridge = {
   createEntry: (input) => ipcRenderer.invoke('entry:create', input),
   updateEntry: (input) => ipcRenderer.invoke('entry:update', input),
   deleteEntry: (worldSlug, id) => ipcRenderer.invoke('entry:delete', worldSlug, id),
+  renameEntryLinks: (worldSlug, entryId, oldTitle) =>
+    ipcRenderer.invoke('entry:rename-links', worldSlug, entryId, oldTitle),
   getBacklinks: (worldSlug, entryId) => ipcRenderer.invoke('entry:backlinks', worldSlug, entryId),
   getWorldGraph: (worldSlug) => ipcRenderer.invoke('world:graph', worldSlug),
   searchGlobal: (query) => ipcRenderer.invoke('search:global', query),
@@ -62,6 +65,9 @@ const bridge: DesktopBridge = {
   findDuplicates: (worldSlug) => ipcRenderer.invoke('hygiene:duplicates', worldSlug),
   mergeDuplicates: (worldSlug, keepEntryId, removeEntryIds) =>
     ipcRenderer.invoke('hygiene:merge', worldSlug, keepEntryId, removeEntryIds),
+  findDuplicateIds: (worldSlug) => ipcRenderer.invoke('hygiene:id-conflicts', worldSlug),
+  reassignEntryId: (worldSlug, relativePath) =>
+    ipcRenderer.invoke('hygiene:reassign-id', worldSlug, relativePath),
   findArtLinkSuggestions: (worldSlug) => ipcRenderer.invoke('hygiene:art-suggestions', worldSlug),
 
   scanObsidianVault: (vaultPath) => ipcRenderer.invoke('obsidian:scan', vaultPath),
