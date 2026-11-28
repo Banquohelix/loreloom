@@ -45,6 +45,17 @@ function createBrowserPreviewBridge(): DesktopBridge {
     bridgePath: String.raw`C:\Users\you\AppData\Roaming\Loreloom\mcp\loreloom-mcp-bridge.js`,
     execPath: String.raw`C:\Users\you\AppData\Local\Programs\Loreloom\Loreloom.exe`,
     portable: false,
+    remote: {
+      enabled: false,
+      mode: 'quick',
+      hostname: '',
+      running: false,
+      publicUrl: null,
+      error: null,
+      token: 'preview-remote-token',
+      cloudflaredFound: true,
+      hasConnectorToken: false,
+    },
   };
   let previewTrash: TrashItem[] = [
     { id: 'entry/sample-1', kind: 'entry', title: 'Old Kael Draft', deletedAt: hoursAgo(2), originalName: 'characters/kael-draft.md' },
@@ -389,6 +400,22 @@ function createBrowserPreviewBridge(): DesktopBridge {
       return previewMcp;
     },
     onMcpActivity: () => () => {},
+    updateMcpRemote: async (patch) => {
+      const enabled = patch.enabled ?? previewMcp.remote.enabled;
+      const mode = patch.mode ?? previewMcp.remote.mode;
+      const hostname = patch.hostname ?? previewMcp.remote.hostname;
+      const publicUrl = enabled ? (mode === 'quick' ? 'https://preview-ash-sea.trycloudflare.com/mcp' : hostname ? `https://${hostname}/mcp` : null) : null;
+      previewMcp = {
+        ...previewMcp,
+        remote: { ...previewMcp.remote, enabled, mode, hostname, running: Boolean(publicUrl), publicUrl, hasConnectorToken: previewMcp.remote.hasConnectorToken || Boolean(patch.connectorToken) },
+      };
+      return previewMcp;
+    },
+    regenerateMcpRemoteToken: async () => {
+      previewMcp = { ...previewMcp, remote: { ...previewMcp.remote, token: `preview-remote-${Date.now().toString(36)}` } };
+      return previewMcp;
+    },
+    onMcpStatusChanged: () => () => {},
     listTrash: async () => previewTrash,
     restoreTrashItem: async (_worldSlug, itemId) => {
       const item = previewTrash.find((t) => t.id === itemId);

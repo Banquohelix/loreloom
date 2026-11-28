@@ -77,6 +77,13 @@ const bridge: DesktopBridge = {
   getMcpStatus: () => ipcRenderer.invoke('mcp:get-status'),
   updateMcpSettings: (patch) => ipcRenderer.invoke('mcp:update-settings', patch),
   regenerateMcpToken: () => ipcRenderer.invoke('mcp:regenerate-token'),
+  updateMcpRemote: (patch) => ipcRenderer.invoke('mcp:update-remote', patch),
+  regenerateMcpRemoteToken: () => ipcRenderer.invoke('mcp:regenerate-remote-token'),
+  onMcpStatusChanged: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('mcp:status-changed', handler);
+    return () => ipcRenderer.removeListener('mcp:status-changed', handler);
+  },
   onMcpActivity: (cb) => {
     const handler = (_e: unknown, activity: Parameters<typeof cb>[0]) => cb(activity);
     ipcRenderer.on('mcp:activity', handler);

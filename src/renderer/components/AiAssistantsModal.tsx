@@ -76,6 +76,23 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
       .catch((err) => notifyError('Could not read AI assistant settings', err));
   }, [bridge]);
 
+  // The tunnel reports its public address (or an error) a few seconds after it starts
+  useEffect(
+    () =>
+      bridge.onMcpStatusChanged(() => {
+        bridge.getMcpStatus().then(setStatus).catch(() => {});
+      }),
+    [bridge]
+  );
+
+  const updateRemote = async (patch: Parameters<typeof bridge.updateMcpRemote>[0]) => {
+    try {
+      setStatus(await bridge.updateMcpRemote(patch));
+    } catch (err) {
+      notifyError('Could not change remote access', err);
+    }
+  };
+
   const update = async (patch: Parameters<typeof bridge.updateMcpSettings>[0]) => {
     try {
       const s = await bridge.updateMcpSettings(patch);
@@ -274,29 +291,31 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                     </p>
                   </div>
                 )}
-                {tab === 'grok-bot' && (
-                  <div className="space-y-2">
-                    <p className="text-[11px] text-[var(--studio-muted)]">
-                      In Grok Bot, add a custom MCP server and fill in its form:
+                {tab === 'grok-bot' &&
+                  (status.remote.running && status.remote.publicUrl ? (
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-[var(--studio-muted)]">
+                        Grok Bot runs MCP tools on its own cloud computer, so it connects through your remote address. In Grok Bot, add a
+                        custom MCP server:
+                      </p>
+                      <CopyBlock label="Name" value="loreloom" />
+                      <CopyBlock label="Transport" value="HTTP" />
+                      <CopyBlock label="Server URL" value={status.remote.publicUrl} />
+                      <CopyBlock label="Header name" value="Authorization" />
+                      <CopyBlock label="Header value" value={`Bearer ${status.remote.token}`} secret={reveal ? undefined : status.remote.token} />
+                      {status.remote.mode === 'quick' && (
+                        <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                          Quick addresses change each time remote access restarts (including when Loreloom restarts), so you'll need to update
+                          the URL in Grok Bot. Use your own domain for an address that never changes.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[var(--studio-muted)] rounded-lg border border-dashed border-[var(--studio-border)] p-3">
+                      Grok Bot runs MCP tools on its own cloud computer, which can't reach this PC directly. Turn on <b>Remote access</b> below;
+                      once it's running, this tab shows the address and header to paste into Grok Bot's custom MCP form.
                     </p>
-                    <CopyBlock label="Name" value="loreloom" />
-                    <CopyBlock label="Transport" value="HTTP" />
-                    <CopyBlock label="Server URL" value={status.url} />
-                    <CopyBlock label="Header name" value="Authorization" />
-                    <CopyBlock label="Header value" value={`Bearer ${status.token}`} secret={reveal ? undefined : status.token} />
-                    <details className="text-[11px] text-[var(--studio-muted)]">
-                      <summary className="cursor-pointer">If HTTP can't connect, use STDIO instead (needs Node.js)</summary>
-                      <div className="space-y-2 pt-2">
-                        <CopyBlock label="Command" value="node" />
-                        <CopyBlock
-                          label="Arguments"
-                          value={`${status.bridgePath} --url ${status.url} --token ${status.token}`}
-                          secret={reveal ? undefined : status.token}
-                        />
-                      </div>
-                    </details>
-                  </div>
-                )}
+                  ))}
                 {tab === 'grok' && (
                   <div className="space-y-2">
                     <CopyBlock
@@ -309,8 +328,8 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                 )}
                 {tab === 'chatgpt' && (
                   <p className="text-xs text-[var(--studio-muted)] rounded-lg border border-dashed border-[var(--studio-border)] p-3">
-                    ChatGPT runs in OpenAI's cloud, so it can't reach a server that only listens on this PC. Secure remote access (a private tunnel
-                    with a sign-in in front of it) is coming in the next update. The other apps here run on your PC and can connect now.
+                    ChatGPT runs in OpenAI's cloud, so it needs <b>Remote access</b> below. ChatGPT connectors also sign in with OAuth rather
+                    than a header; that sign-in is coming in the next update. The other apps here run on your PC and can connect now.
                   </p>
                 )}
                 {tab === 'other' && (
@@ -324,6 +343,115 @@ export function AiAssistantsModal({ onClose }: { onClose: () => void }) {
                   Keep the token private: anyone with it, on this PC, can read and change your lore. Loreloom has to be open for assistants
                   to work.
                 </p>
+              </div>
+            )}
+
+            {status.enabled && (
+              <div className="rounded-xl border border-[var(--studio-border)] p-3.5 space-y-3">
+                <Toggle
+                  label="Remote access (for Grok Bot and ChatGPT)"
+                  hint="Gives Loreloom a private HTTPS address through a Cloudflare tunnel, so assistants that run in the cloud can reach it. Uses its own token. No router ports are opened."
+                  checked={status.remote.enabled}
+                  onChange={(v) => updateRemote({ enabled: v })}
+                />
+                {!status.remote.cloudflaredFound && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                      Remote access needs Cloudflare's free cloudflared tool. Install it, then turn remote access on:
+                    </p>
+                    <CopyBlock label="In PowerShell" value="winget install --id Cloudflare.cloudflared" />
+                  </div>
+                )}
+                {status.remote.enabled && (
+                  <>
+                    <div role="radiogroup" aria-label="Address" className="grid gap-1.5">
+                      <label className="flex items-start gap-2 text-xs cursor-pointer">
+                        <input
+                          type="radio"
+                          checked={status.remote.mode === 'quick'}
+                          onChange={() => updateRemote({ mode: 'quick' })}
+                          className="mt-0.5 accent-[var(--world-accent)]"
+                        />
+                        <span>
+                          <span className="font-medium">Quick address</span>
+                          <span className="block text-[11px] text-[var(--studio-muted)]">
+                            A random *.trycloudflare.com address, no account needed. Changes every time it starts. Good for trying it out.
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 text-xs cursor-pointer">
+                        <input
+                          type="radio"
+                          checked={status.remote.mode === 'named'}
+                          onChange={() => updateRemote({ mode: 'named' })}
+                          className="mt-0.5 accent-[var(--world-accent)]"
+                        />
+                        <span>
+                          <span className="font-medium">My own domain</span>
+                          <span className="block text-[11px] text-[var(--studio-muted)]">
+                            A fixed address such as mcp.loreloom.io. In Cloudflare (Zero Trust → Networks → Tunnels), create a tunnel, add a
+                            public hostname pointing to http://127.0.0.1:{status.port}, and paste the tunnel's token here.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                    {status.remote.mode === 'named' && (
+                      <div className="grid gap-2">
+                        <input
+                          defaultValue={status.remote.hostname}
+                          key={`host-${status.remote.hostname}`}
+                          placeholder="mcp.loreloom.io"
+                          aria-label="Hostname"
+                          onBlur={(e) => e.target.value.trim() !== status.remote.hostname && updateRemote({ hostname: e.target.value })}
+                          className="rounded-md border border-[var(--studio-border)] bg-transparent px-2 py-1.5 text-xs outline-none"
+                        />
+                        <input
+                          type="password"
+                          placeholder={status.remote.hasConnectorToken ? 'Tunnel token saved (paste a new one to replace it)' : 'Tunnel token from Cloudflare'}
+                          aria-label="Tunnel token"
+                          onBlur={(e) => {
+                            if (e.target.value.trim()) {
+                              void updateRemote({ connectorToken: e.target.value });
+                              e.target.value = '';
+                            }
+                          }}
+                          className="rounded-md border border-[var(--studio-border)] bg-transparent px-2 py-1.5 text-xs outline-none"
+                        />
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full ${
+                          status.remote.running
+                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-black/5 dark:bg-white/10 text-[var(--studio-muted)]'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${status.remote.running ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
+                        {status.remote.running ? `Online at ${status.remote.publicUrl}` : status.remote.error ? 'Not running' : 'Starting…'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!window.confirm('Make a new remote token? Grok Bot and other remote assistants will need the new one.')) return;
+                          try {
+                            setStatus(await bridge.regenerateMcpRemoteToken());
+                          } catch (err) {
+                            notifyError('Could not make a new remote token', err);
+                          }
+                        }}
+                        className="ml-auto flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" /> New remote token
+                      </button>
+                    </div>
+                    {status.remote.error && <p className="text-xs text-red-600 dark:text-red-400">{status.remote.error}</p>}
+                    <p className="text-[11px] text-[var(--studio-muted)]">
+                      Anyone with the address and the remote token can read and change your lore while Loreloom is open, so keep the token
+                      private. Wrong tokens are locked out after 10 tries. Remote access stops when Loreloom closes.
+                    </p>
+                  </>
+                )}
               </div>
             )}
           </>
