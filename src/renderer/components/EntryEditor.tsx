@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
+import { useEditor, EditorContent, BubbleMenu } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import TaskList from '@tiptap/extension-task-list';
@@ -11,12 +11,23 @@ import TableRow from '@tiptap/extension-table-row';
 import TableHeader from '@tiptap/extension-table-header';
 import TableCell from '@tiptap/extension-table-cell';
 import {
+  BadgeCheck,
+  Bold,
   Check,
   Code,
+  EyeOff,
   Heading1,
   Heading2,
   Heading3,
+  Heading4,
+  Heading5,
+  Heading6,
   Image as ImageIcon,
+  Italic,
+  Lock,
+  MessageCircleQuestion,
+  StickyNote,
+  Strikethrough,
   Link2,
   List,
   ListChecks,
@@ -33,6 +44,7 @@ import { normalizeBodyForCompare } from '@shared/wikilink-repair';
 import { getBridge } from '../lib/bridge';
 import { editorHtmlToMarkdown, markdownToEditorHtml } from '../lib/markdown-codec';
 import { registerPendingSaveFlusher } from '../lib/pending-saves';
+import { Callout } from '../lib/callout-extension';
 import {
   createSuggestionMenu,
   rankByQuery,
@@ -53,7 +65,9 @@ function htmlToMarkdown(html: string, worldSlug: string): string {
 export type EntrySavePatch = Omit<UpdateEntryInput, 'worldSlug' | 'id'>;
 
 type SlashCommandId =
-  | 'h1' | 'h2' | 'h3' | 'quote' | 'bullet' | 'ordered' | 'task' | 'code' | 'hr' | 'table' | 'art';
+  | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+  | 'canon' | 'rumor' | 'secret' | 'note' | 'spoiler'
+  | 'quote' | 'bullet' | 'ordered' | 'task' | 'code' | 'hr' | 'table' | 'art';
 
 interface SlashCommand {
   id: SlashCommandId;
@@ -67,7 +81,15 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { id: 'h1', label: 'Heading 1', hint: 'Big section title', icon: Heading1, keywords: ['title', 'h1'] },
   { id: 'h2', label: 'Heading 2', hint: 'Medium section title', icon: Heading2, keywords: ['subtitle', 'h2'] },
   { id: 'h3', label: 'Heading 3', hint: 'Small section title', icon: Heading3, keywords: ['h3'] },
-  { id: 'quote', label: 'Lore Callout / Quote', hint: 'Highlighted passage', icon: Quote, keywords: ['blockquote', 'callout'] },
+  { id: 'h4', label: 'Heading 4', hint: 'Sub-section title', icon: Heading4, keywords: ['h4'] },
+  { id: 'h5', label: 'Heading 5', hint: 'Minor heading', icon: Heading5, keywords: ['h5'] },
+  { id: 'h6', label: 'Heading 6', hint: 'Smallest heading', icon: Heading6, keywords: ['h6'] },
+  { id: 'canon', label: 'Canon Callout', hint: 'Established, official lore', icon: BadgeCheck, keywords: ['callout', 'official', 'fact'] },
+  { id: 'rumor', label: 'Rumor Callout', hint: 'Hearsay or in-world misinformation', icon: MessageCircleQuestion, keywords: ['callout', 'hearsay', 'myth'] },
+  { id: 'secret', label: 'GM Secret Callout', hint: 'Hidden from players', icon: Lock, keywords: ['callout', 'gm', 'dm', 'hidden'] },
+  { id: 'note', label: 'Note Callout', hint: 'Highlighted aside', icon: StickyNote, keywords: ['callout', 'aside', 'info'] },
+  { id: 'spoiler', label: 'Spoiler Toggle', hint: 'Collapsed until opened', icon: EyeOff, keywords: ['toggle', 'collapse', 'hide', 'details'] },
+  { id: 'quote', label: 'Quote', hint: 'Quoted passage', icon: Quote, keywords: ['blockquote', 'citation'] },
   { id: 'bullet', label: 'Bullet List', hint: 'Unordered list', icon: List, keywords: ['ul', 'list'] },
   { id: 'ordered', label: 'Numbered List', hint: 'Ordered list', icon: ListOrdered, keywords: ['ol', 'number'] },
   { id: 'task', label: 'Checklist', hint: 'Tasks with checkboxes', icon: ListChecks, keywords: ['todo', 'task', 'checkbox'] },
@@ -211,6 +233,7 @@ export function EntryEditor({
       TaskList,
       TaskItem.configure({ nested: true }),
       ImageExtension.configure({ inline: false }),
+      Callout,
       ...suggestionExtensions,
     ],
     editorProps: {
@@ -368,8 +391,27 @@ export function EntryEditor({
         editor.chain().focus().toggleHeading({ level: 2 }).run();
         break;
       case 'h3':
-        editor.chain().focus().toggleHeading({ level: 3 }).run();
+      case 'h4':
+      case 'h5':
+      case 'h6':
+        editor.chain().focus().toggleHeading({ level: Number(cmd[1]) as 3 | 4 | 5 | 6 }).run();
         break;
+      case 'canon':
+      case 'rumor':
+      case 'secret':
+      case 'note':
+      case 'spoiler': {
+        const attrs = { kind: cmd, title: '', fold: cmd === 'spoiler' ? '-' : '' };
+        // Wrap the current block; if that isn't allowed here, insert an empty callout instead
+        if (!editor.chain().focus().wrapIn('callout', attrs).run()) {
+          editor
+            .chain()
+            .focus()
+            .insertContent({ type: 'callout', attrs, content: [{ type: 'paragraph' }] })
+            .run();
+        }
+        break;
+      }
       case 'quote':
         editor.chain().focus().toggleBlockquote().run();
         break;
@@ -596,6 +638,7 @@ export function EntryEditor({
           }`}
         >
           <EditorContent editor={editor} />
+          {editor && <FormattingBubble editor={editor} />}
 
           {/* Inline suggestion menu (slash commands / [[wikilinks]]), positioned at the cursor */}
           {menu && menu.items.length > 0 && menu.rect && (
@@ -605,7 +648,11 @@ export function EntryEditor({
               className="fixed z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-xl p-1.5"
               style={{
                 left: Math.min(menu.rect.left, window.innerWidth - 300),
-                top: menu.rect.bottom + 320 > window.innerHeight ? Math.max(8, menu.rect.top - 326) : menu.rect.bottom + 6,
+                // Near the bottom of the window it opens upwards, anchored by its bottom edge so a
+                // short list sits right above the cursor instead of 320px away
+                ...(menu.rect.bottom + 320 > window.innerHeight
+                  ? { bottom: window.innerHeight - menu.rect.top + 6, maxHeight: Math.max(120, menu.rect.top - 14) }
+                  : { top: menu.rect.bottom + 6 }),
               }}
               onMouseDown={(e) => e.preventDefault()}
             >
@@ -719,5 +766,101 @@ export function EntryEditor({
         </div>
       )}
     </div>
+  );
+}
+
+type TiptapEditor = NonNullable<ReturnType<typeof useEditor>>;
+
+/** Floating toolbar shown over selected text: marks, link, headings and quote. */
+function FormattingBubble({ editor }: { editor: TiptapEditor }) {
+  const [linkDraft, setLinkDraft] = useState<string | null>(null);
+
+  const applyLink = () => {
+    const href = (linkDraft ?? '').trim();
+    if (!href) {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run();
+    } else {
+      const safe = /^(https?:|mailto:)/i.test(href) ? href : `https://${href}`;
+      editor.chain().focus().extendMarkRange('link').setLink({ href: safe }).run();
+    }
+    setLinkDraft(null);
+  };
+
+  const buttons: Array<{ label: string; icon: typeof Bold; active: boolean; run: () => void }> = [
+    { label: 'Bold (Ctrl+B)', icon: Bold, active: editor.isActive('bold'), run: () => editor.chain().focus().toggleBold().run() },
+    { label: 'Italic (Ctrl+I)', icon: Italic, active: editor.isActive('italic'), run: () => editor.chain().focus().toggleItalic().run() },
+    { label: 'Strikethrough', icon: Strikethrough, active: editor.isActive('strike'), run: () => editor.chain().focus().toggleStrike().run() },
+    { label: 'Inline code', icon: Code, active: editor.isActive('code'), run: () => editor.chain().focus().toggleCode().run() },
+    {
+      label: editor.isActive('link') ? 'Edit or remove link' : 'Add link',
+      icon: Link2,
+      active: editor.isActive('link'),
+      run: () => setLinkDraft((editor.getAttributes('link').href as string | undefined) ?? ''),
+    },
+    { label: 'Heading 2', icon: Heading2, active: editor.isActive('heading', { level: 2 }), run: () => editor.chain().focus().toggleHeading({ level: 2 }).run() },
+    { label: 'Heading 3', icon: Heading3, active: editor.isActive('heading', { level: 3 }), run: () => editor.chain().focus().toggleHeading({ level: 3 }).run() },
+    { label: 'Quote', icon: Quote, active: editor.isActive('blockquote'), run: () => editor.chain().focus().toggleBlockquote().run() },
+  ];
+
+  return (
+    <BubbleMenu
+      editor={editor}
+      tippyOptions={{ duration: 120, maxWidth: 'none', onHidden: () => setLinkDraft(null) }}
+      shouldShow={({ editor: ed, state }) => !state.selection.empty && ed.isEditable && !ed.isActive('image') && !ed.isActive('codeBlock')}
+    >
+      <div
+        role="toolbar"
+        aria-label="Text formatting"
+        className="flex items-center gap-0.5 rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-lg p-1"
+      >
+        {linkDraft === null ? (
+          buttons.map((b) => (
+            <button
+              key={b.label}
+              type="button"
+              title={b.label}
+              aria-label={b.label}
+              aria-pressed={b.active}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={b.run}
+              className={`p-1.5 rounded-md cursor-pointer transition ${
+                b.active
+                  ? 'bg-[var(--world-accent-soft)] text-[var(--world-accent)]'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5'
+              }`}
+            >
+              <b.icon className="w-3.5 h-3.5" />
+            </button>
+          ))
+        ) : (
+          <form
+            className="flex items-center gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              applyLink();
+            }}
+          >
+            <input
+              autoFocus
+              value={linkDraft}
+              onChange={(e) => setLinkDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setLinkDraft(null);
+                  editor.commands.focus();
+                }
+              }}
+              placeholder="Paste a URL, or leave empty to remove"
+              aria-label="Link URL"
+              className="w-64 px-2 py-1 text-xs rounded-md bg-transparent border border-[var(--studio-border)] outline-none focus:border-[var(--world-accent)]"
+            />
+            <button type="submit" className="px-2 py-1 text-xs font-medium rounded-md hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer">
+              Apply
+            </button>
+          </form>
+        )}
+      </div>
+    </BubbleMenu>
   );
 }

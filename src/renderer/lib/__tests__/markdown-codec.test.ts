@@ -57,3 +57,56 @@ describe('markdown codec round-trip', () => {
     expect(markdownToEditorHtml(md, resolve)).toContain(`${PREFIX}assets/my%20file%20(1).png`);
   });
 });
+
+describe('callouts (Obsidian syntax)', () => {
+  it('round-trips lore callouts, titles, folds and nested content', () => {
+    const md = [
+      '> [!canon] The Treaty of Ash',
+      '> Signed in **3E 212** by [[Kael Vorn]].',
+      '>',
+      '> - Ceasefire',
+      '> - Border at the [[Ash Sea]]',
+      '',
+      'Between callouts.',
+      '',
+      '> [!spoiler]- How it ends',
+      '> Kael betrays the Citadel.',
+      '',
+      '> [!secret]+',
+      '> The GM knows.',
+    ].join('\n');
+    const html = markdownToEditorHtml(md, resolve);
+    expect(html).toContain('data-callout="canon"');
+    expect(html).toContain('data-title="The Treaty of Ash"');
+    expect(html).toContain('data-fold="-"');
+    expect(roundTrip(md)).toBe(md);
+  });
+
+  it('keeps unknown Obsidian callout types, empty callouts and nested callouts', () => {
+    const md = ['> [!warning] Mind the gap', '> > [!rumor] Whispered', '> > Kael lives.', '', '> [!note]'].join('\n');
+    expect(roundTrip(md)).toBe(md);
+  });
+
+  it('leaves ordinary blockquotes alone', () => {
+    const md = '> Just a quote with [[Kael]].';
+    expect(markdownToEditorHtml(md, resolve)).toContain('<blockquote>');
+    expect(roundTrip(md)).toBe(md);
+  });
+});
+
+describe('lists', () => {
+  it('writes `- item` and `1. item` instead of rewriting lists with extra spaces', () => {
+    const md = '- Ash\n- Ember\n    - Cinder\n\n1. First age\n2. Second age';
+    expect(roundTrip('- Ash\n- Ember\n\n1. First age\n2. Second age')).toBe('- Ash\n- Ember\n\n1. First age\n2. Second age');
+    expect(roundTrip(md)).toBe('- Ash\n- Ember\n  - Cinder\n\n1. First age\n2. Second age');
+  });
+
+  it('writes TipTap-shaped lists (<li><p>…</p></li>) tight, keeping multi-paragraph items', () => {
+    const tiptap =
+      '<ul><li><p>Ash</p></li><li><p>Ember</p><ul><li><p>Cinder</p></li></ul></li></ul>' +
+      '<ol><li><p>First</p><p>More about the first age.</p></li><li><p>Second</p></li></ol>';
+    expect(editorHtmlToMarkdown(tiptap, PREFIX)).toBe(
+      '- Ash\n- Ember\n  - Cinder\n\n1. First\n   \n   More about the first age.\n2. Second'.replace('   \n', '\n')
+    );
+  });
+});

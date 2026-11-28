@@ -110,6 +110,7 @@ export function slugify(input: string): string {
 
 export function extractExcerpt(markdown: string, maxLength = 180): string {
   const stripped = markdown
+    .replace(/^(\s*>\s*)+\[![\w-]+\][+-]?/gm, '') // callout markers: `> [!canon]- Title`
     .replace(/!\[\[[^\]]+\]\]/g, '')
     .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
     .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2')

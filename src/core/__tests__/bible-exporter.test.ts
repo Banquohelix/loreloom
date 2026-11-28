@@ -102,4 +102,26 @@ describe('WorldBibleExporter', () => {
     expect(html).not.toContain('Ghost');
     expect(requested).toHaveLength(4);
   });
+  it('renders callouts as styled asides, and collapsible ones open so they print', async () => {
+    const world = await store.createWorld({ name: 'Brimstone', medium: 'novel' });
+    const kael = await store.createEntry({
+      worldSlug: world.slug,
+      title: 'Kael Vorn',
+      type: 'character',
+      body: '> [!canon] Birth\n> Born in 3E 212.\n\n> [!spoiler]- Fate\n> Betrays the [[Kael Vorn|Citadel]].\n\n> Plain quote.',
+    });
+    expect(kael.excerpt).toBe('Birth Born in 3E 212. Fate Betrays the Citadel. Plain quote.');
+
+    const { html } = await buildWorldBibleHtml(store, world, {
+      worldSlug: world.slug,
+      includedTypeIds: ['character'],
+      includeArtGallery: false,
+      appearance: 'light',
+    });
+    expect(html).toContain('<aside class="callout callout-canon"><div class="callout-title">Canon: Birth</div>');
+    expect(html).toContain('<details class="callout callout-spoiler" open><summary class="callout-title">Spoiler: Fate</summary>');
+    expect(html).toContain(`href="#entry-${kael.id}"`);
+    expect(html).toContain('<blockquote>');
+    expect(html).not.toContain('[!canon]');
+  });
 });

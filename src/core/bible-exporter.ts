@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
-import { marked } from 'marked';
+import { Marked } from 'marked';
+import { calloutLabel, calloutMarkedExtension } from '../shared/callouts';
 import { resolveWorldTokens } from './theme-engine';
 import type { WorkspaceStore } from './workspace-store';
 import type {
@@ -9,6 +10,22 @@ import type {
   ExportWorldBibleOptions,
   WorldConfig,
 } from '../shared/types';
+
+/** Callouts render as styled asides; collapsible ones as <details open> so printed PDFs show them. */
+const bibleMarked = new Marked({ gfm: true });
+bibleMarked.use(
+  calloutMarkedExtension((c, bodyHtml) => {
+    const style = ['note', 'canon', 'rumor', 'secret', 'spoiler'].includes(c.kind) ? c.kind : 'note';
+    const label = escapeHtml(calloutLabel(c.kind));
+    const heading = c.title ? `${label}: ${escapeHtml(c.title)}` : label;
+    if (c.fold) {
+      return `<details class="callout callout-${style}" open><summary class="callout-title">${heading}</summary>${bodyHtml}</details>
+`;
+    }
+    return `<aside class="callout callout-${style}"><div class="callout-title">${heading}</div>${bodyHtml}</aside>
+`;
+  })
+);
 
 function escapeHtml(input: string): string {
   return input
@@ -178,7 +195,7 @@ async function renderWorldBible(
         return `**${label}**`;
       }
     );
-    return marked.parse(processed, { async: false }) as string;
+    return bibleMarked.parse(processed, { async: false }) as string;
   };
 
   const galleryAssets = allAssets.filter((a) => !a.missing);
@@ -282,6 +299,13 @@ async function renderWorldBible(
     .prop-grid dd { margin: 2px 0 0; font-size: 0.85rem; font-weight: 500; }
     .prose a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
     .prose img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); margin: 12px 0; }
+    .prose .callout { border: 1px solid var(--border); border-left: 3px solid var(--callout, var(--accent)); background: var(--muted-bg); margin: 14px 0; padding: 8px 16px 10px; border-radius: 0 8px 8px 0; break-inside: avoid; }
+    .prose .callout-title { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--callout, var(--accent)); margin: 2px 0 4px; }
+    .prose details.callout > summary { cursor: pointer; }
+    .prose .callout-canon { --callout: #b8860b; }
+    .prose .callout-rumor { --callout: #8b5cf6; font-style: italic; }
+    .prose .callout-secret { --callout: #dc2626; }
+    .prose .callout-spoiler { --callout: #64748b; }
     .prose blockquote { border-left: 3px solid var(--accent); background: var(--muted-bg); margin: 14px 0; padding: 10px 16px; border-radius: 0 8px 8px 0; font-style: italic; }
     .prose.dropcap > p:first-of-type::first-letter { font-family: var(--heading-font); float: left; font-size: 3.1rem; line-height: 0.85; padding-right: 8px; color: var(--accent); font-weight: 600; }
     .art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
