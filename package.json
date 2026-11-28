@@ -1,6 +1,6 @@
 {
   "name": "loreloom",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "Notion-style worldbuilding notes and concept art studio synced via OneDrive/Google Drive",
   "private": true,
   "main": "dist-electron/electron/main.js",
@@ -14,6 +14,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@fontsource/cormorant-garamond": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/newsreader": "^5.3.0",
     "@tiptap/extension-blockquote": "^2.11.5",
     "@tiptap/extension-code-block": "^2.11.5",
     "@tiptap/extension-horizontal-rule": "^2.11.5",
@@ -37,7 +41,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "turndown": "^7.2.0",
-    "turndown-plugin-gfm": "^1.0.2"
+    "turndown-plugin-gfm": "^1.0.2",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.9",
@@ -46,9 +51,10 @@
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@types/turndown": "^5.0.5",
+    "@types/yazl": "^3.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "electron": "^35.0.0",
+    "electron": "^45.5.0",
     "electron-builder": "^25.1.8",
     "tailwindcss": "^4.0.9",
     "typescript": "^5.7.3",

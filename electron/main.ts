@@ -1,19 +1,24 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, safeStorage, shell } from 'electron';
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
-import { WorkspaceStore } from '../src/core/workspace-store';
-import { IndexEngine } from '../src/core/index-engine';
+import { WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
+import { IndexEngine, extractWikilinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { KeyedMutex } from '../src/core/keyed-mutex';
-import { checkLatestGitHubRelease } from '../src/core/update-checker';
+import {
+  checkLatestGitHubRelease,
+  findSha256ForFile,
+  isTrustedReleaseAssetUrl,
+  LORELOOM_SIGNING_THUMBPRINT,
+} from '../src/core/update-checker';
 import {
   findArtLinkSuggestions,
   findDuplicateGroups,
@@ -35,6 +40,11 @@ import type {
   WorkspaceConfig,
   WorkspaceExternalChangeEvent,
 } from '../src/shared/types';
+
+// Test/dev isolation: run against a separate settings folder (and therefore a separate workspace)
+if (process.env.LORELOOM_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(process.env.LORELOOM_USER_DATA_DIR));
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -58,7 +68,10 @@ const wikilinkRepairDone = new Set<string>();
 interface AppSettings {
   workspacePath?: string;
   worldIntakeFolders?: Record<string, string[]>;
+  /** Legacy plaintext token (migrated to githubUpdateTokenEnc on first read). */
   githubUpdateToken?: string;
+  /** GitHub token encrypted with Electron safeStorage (Windows DPAPI), base64. */
+  githubUpdateTokenEnc?: string;
 }
 
 function getSettingsPath(): string {
@@ -122,6 +135,205 @@ async function encodeImageForExport(absPath: string, maxDimension: number): Prom
   return `data:image/${transparent ? 'png' : 'jpeg'};base64,${encoded.toString('base64')}`;
 }
 
+/**
+ * Zips a folder in-process (streams, no 2 GB limit, includes dot-folders such as `.trash`,
+ * no shell command built from file paths).
+ */
+async function zipFolder(sourceDir: string, destZip: string): Promise<void> {
+  const zip = new yazl.ZipFile();
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    for (const item of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, item.name);
+      const zipPath = rel ? `${rel}/${item.name}` : item.name;
+      if (item.isDirectory()) await walk(full, zipPath);
+      else if (item.isFile() && !item.name.endsWith('.tmp')) zip.addFile(full, zipPath);
+    }
+  };
+  await walk(sourceDir, '');
+  await new Promise<void>((resolve, reject) => {
+    const out = createWriteStream(destZip);
+    out.on('close', () => resolve());
+    out.on('error', reject);
+    zip.outputStream.on('error', reject);
+    zip.outputStream.pipe(out);
+    zip.end();
+  });
+}
+
+async function getUpdateToken(): Promise<string | null> {
+  const settings = await readAppSettings();
+  if (settings.githubUpdateTokenEnc && safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(settings.githubUpdateTokenEnc, 'base64'));
+    } catch {
+      return null;
+    }
+  }
+  const legacy = settings.githubUpdateToken?.trim();
+  if (legacy && safeStorage.isEncryptionAvailable()) {
+    // Migrate the plaintext token written by <= 0.6.6
+    await setUpdateToken(legacy);
+  }
+  return legacy || null;
+}
+
+async function setUpdateToken(token: string | null): Promise<void> {
+  const settings = await readAppSettings();
+  const updated: AppSettings = { ...settings };
+  delete updated.githubUpdateToken;
+  delete updated.githubUpdateTokenEnc;
+  const clean = token?.trim();
+  if (clean) {
+    if (safeStorage.isEncryptionAvailable()) {
+      updated.githubUpdateTokenEnc = safeStorage.encryptString(clean).toString('base64');
+    } else {
+      updated.githubUpdateToken = clean;
+    }
+  }
+  await writeAppSettings(updated);
+}
+
+async function downloadReleaseAsset(apiUrl: string, token: string | null): Promise<Buffer> {
+  if (!isTrustedReleaseAssetUrl(apiUrl)) throw new Error('Refusing to download from an untrusted URL.');
+  const headers: Record<string, string> = {
+    Accept: 'application/octet-stream',
+    'User-Agent': `Loreloom/${app.getVersion()}`,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(apiUrl, { headers, redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not download update (HTTP ${res.status}).`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Reads the installer's Authenticode signature without building a shell command from the path. */
+function readAuthenticode(filePath: string): Promise<{ status: string; thumbprint: string } | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  const script =
+    '$s = Get-AuthenticodeSignature -LiteralPath $env:LORELOOM_VERIFY_PATH; ' +
+    '@{ status = [string]$s.Status; thumbprint = [string]$s.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress';
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { env: { ...process.env, LORELOOM_VERIFY_PATH: filePath }, timeout: 30_000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          const parsed = JSON.parse(stdout.trim()) as { status?: string; thumbprint?: string };
+          resolve({ status: parsed.status ?? '', thumbprint: (parsed.thumbprint ?? '').toUpperCase() });
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+/**
+ * An installer is only run if its SHA-256 matches the release's SHA256SUMS.txt, or if it carries an
+ * intact Authenticode signature from the Loreloom Studio certificate.
+ */
+async function verifyInstaller(
+  installerPath: string,
+  installerBytes: Buffer,
+  filename: string,
+  checksumsApiUrl: string | undefined,
+  token: string | null
+): Promise<{ ok: true; method: string } | { ok: false; reason: string }> {
+  if (checksumsApiUrl) {
+    const sums = (await downloadReleaseAsset(checksumsApiUrl, token)).toString('utf8');
+    const expected = findSha256ForFile(sums, filename);
+    if (expected) {
+      const actual = crypto.createHash('sha256').update(installerBytes).digest('hex');
+      return actual === expected
+        ? { ok: true, method: 'sha256' }
+        : { ok: false, reason: 'The download does not match the release checksum.' };
+    }
+  }
+  const sig = await readAuthenticode(installerPath);
+  if (sig && sig.thumbprint === LORELOOM_SIGNING_THUMBPRINT) {
+    // UnknownError = intact signature whose self-signed root is not trusted on this PC
+    if (sig.status === 'Valid' || sig.status === 'UnknownError') return { ok: true, method: 'authenticode' };
+    return { ok: false, reason: `The installer signature is ${sig.status}.` };
+  }
+  return { ok: false, reason: 'The installer could not be verified (no checksum or Loreloom signature).' };
+}
+
+/** Files the renderer may open with the OS: recent export outputs and non-executable workspace files. */
+const openableExportPaths = new Set<string>();
+const EXECUTABLE_EXTS = new Set([
+  '.exe', '.msi', '.bat', '.cmd', '.com', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.scr', '.lnk', '.hta', '.cpl', '.reg',
+]);
+
+function canOpenLocalFile(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+  if (EXECUTABLE_EXTS.has(path.extname(resolved).toLowerCase())) return false;
+  if (openableExportPaths.has(resolved)) return true;
+  if (!store) return false;
+  const root = path.resolve(store.rootPath);
+  return resolved.startsWith(root + path.sep);
+}
+
+/**
+ * Downscaled thumbnails for grids, cards and pickers, cached in machine-local AppData (never in the
+ * synced folder). Keyed by source path + size + mtime, so edited images get fresh thumbnails.
+ */
+const THUMBNAIL_SIZES = new Set([128, 256, 512, 1024, 1600]);
+const thumbnailJobs = new Map<string, Promise<string | null>>();
+
+function getThumbnailDir(): string {
+  return path.join(app.getPath('userData'), 'thumbnails');
+}
+
+async function getThumbnail(absPath: string, size: number): Promise<string | null> {
+  const ext = path.extname(absPath).toLowerCase();
+  if (ext === '.gif') return null; // keep animation
+  const stat = await fs.stat(absPath);
+  const key = crypto
+    .createHash('sha1')
+    .update(`${absPath.toLowerCase()}|${stat.size}|${Math.floor(stat.mtimeMs)}|${size}`)
+    .digest('hex');
+  const existingJob = thumbnailJobs.get(key);
+  if (existingJob) return existingJob;
+
+  const job = (async () => {
+    const dir = getThumbnailDir();
+    for (const candidate of [path.join(dir, `${key}.jpg`), path.join(dir, `${key}.png`)]) {
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // not cached yet
+      }
+    }
+    let img = nativeImage.createFromPath(absPath);
+    if (img.isEmpty()) return null; // webp/avif: nativeImage can't decode, serve the original
+    const { width, height } = img.getSize();
+    if (Math.max(width, height) <= size) return null; // already small: original is fine
+    const scale = size / Math.max(width, height);
+    img = img.resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    });
+    const transparent = ext === '.png' && bitmapHasTransparency(img.toBitmap());
+    const out = path.join(dir, `${key}.${transparent ? 'png' : 'jpg'}`);
+    await fs.mkdir(dir, { recursive: true });
+    const tmp = `${out}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, transparent ? img.toPNG() : img.toJPEG(84));
+    await fs.rename(tmp, out).catch(async () => {
+      await fs.unlink(tmp).catch(() => {});
+    });
+    return out;
+  })();
+  thumbnailJobs.set(key, job);
+  try {
+    return await job;
+  } finally {
+    thumbnailJobs.delete(key);
+  }
+}
+
 function requireStore(): WorkspaceStore {
   if (!store) throw new Error('Workspace not opened');
   return store;
@@ -132,12 +344,35 @@ function requireIndex(): IndexEngine {
   return indexEngine;
 }
 
+/** Files Loreloom wrote itself in the last few seconds; the watcher ignores their echoes. */
+const recentSelfWrites = new Map<string, number>();
+const SELF_WRITE_WINDOW_MS = 3000;
+fileWriteObserver.onWrite = (absPath) => {
+  recentSelfWrites.set(absPath.toLowerCase(), Date.now() + SELF_WRITE_WINDOW_MS);
+};
+
+function isRecentSelfWrite(absPath: string): boolean {
+  const key = path.resolve(absPath).toLowerCase();
+  const expiry = recentSelfWrites.get(key);
+  if (expiry === undefined) return false;
+  if (expiry > Date.now()) return true;
+  recentSelfWrites.delete(key);
+  return false;
+}
+
+type WatchEvent = 'add' | 'change' | 'unlink' | 'unlinkDir';
+
+/**
+ * Watches the synced Workspace. Changes are batched, Loreloom's own writes are skipped, and only
+ * the files that changed are re-indexed (the old version rebuilt the whole index on every save).
+ */
 async function startWorkspaceWatcher(rootPath: string): Promise<void> {
   if (watcher) {
     await watcher.close();
     watcher = null;
   }
 
+  const pending = new Map<string, WatchEvent>();
   let debounceTimer: NodeJS.Timeout | null = null;
   watcher = chokidar.watch(path.join(rootPath, 'worlds'), {
     ignoreInitial: true,
@@ -145,37 +380,89 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
     awaitWriteFinish: { stabilityThreshold: 350, pollInterval: 100 },
   });
 
-  const handleChange = (changedPath: string) => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(async () => {
-      if (!store || !indexEngine) return;
+  const processBatch = async () => {
+    if (!store || !indexEngine) return;
+    const s = store;
+    const idx = indexEngine;
+    const batch = Array.from(pending.entries());
+    pending.clear();
+
+    const events = new Map<string, WorkspaceExternalChangeEvent>();
+    const worldsToResync = new Set<string>();
+    const removedWorlds = new Set<string>();
+
+    for (const [changedPath, evt] of batch) {
       const rel = path.relative(rootPath, changedPath).replace(/\\/g, '/');
       const parts = rel.split('/');
-      const worldSlug = parts[0] === 'worlds' && parts[1] ? parts[1] : undefined;
+      const worldSlug = parts[0] === 'worlds' ? parts[1] : undefined;
+      if (!worldSlug) continue;
 
-      let kind: WorkspaceExternalChangeEvent['kind'] = 'entry';
-      if (rel.endsWith('world.yaml')) kind = 'world';
-      else if (rel.includes('/assets/') || rel.endsWith('art-manifest.yaml')) kind = 'art';
-
+      let kind: WorkspaceExternalChangeEvent['kind'] = 'art';
       try {
-        await indexEngine.rebuildWorkspace(store);
+        if (parts.length === 2 && evt === 'unlinkDir') {
+          removedWorlds.add(worldSlug);
+          kind = 'world';
+        } else if (parts.length === 3 && parts[2] === 'world.yaml') {
+          worldsToResync.add(worldSlug);
+          kind = 'world';
+        } else if (parts[2] === 'entries' && rel.toLowerCase().endsWith('.md')) {
+          kind = 'entry';
+          const entryRel = parts.slice(3).join('/');
+          if (evt === 'unlink') {
+            idx.removeEntryByPath(worldSlug, entryRel);
+          } else {
+            const entry = await s.readEntryAtRelativePath(worldSlug, entryRel);
+            if (entry) {
+              const indexedPath = idx.getEntryRelativePath(worldSlug, entry.id);
+              if (indexedPath && indexedPath !== entryRel) {
+                // Same id in two files (e.g. a sync conflict copy): rescan to record the duplicate
+                worldsToResync.add(worldSlug);
+              } else {
+                idx.removeEntryByPath(worldSlug, entryRel);
+                idx.upsertEntry(entry);
+              }
+            }
+          }
+        }
       } catch {
-        // Ignore transient OneDrive/Google Drive lock errors
+        // Transient OneDrive/Google Drive locks: the next change event retries this file
+        worldsToResync.add(worldSlug);
       }
+      events.set(`${worldSlug}:${kind}`, { worldSlug, kind, relativePath: rel });
+    }
 
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('workspace:external-change', {
-          worldSlug,
-          kind,
-          relativePath: rel,
-        } satisfies WorkspaceExternalChangeEvent);
+    if (worldsToResync.size > 0 || removedWorlds.size > 0) {
+      const worlds = await s.listWorlds().catch(() => []);
+      for (const slug of removedWorlds) {
+        if (!worlds.some((w) => w.slug === slug)) idx.removeWorld(slug);
       }
+      for (const slug of worldsToResync) {
+        const world = worlds.find((w) => w.slug === slug);
+        if (world) await idx.syncWorld(s, world).catch(() => 0);
+        else idx.removeWorld(slug);
+      }
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      for (const evt of events.values()) {
+        mainWindow.webContents.send('workspace:external-change', evt satisfies WorkspaceExternalChangeEvent);
+      }
+    }
+  };
+
+  const handle = (evt: WatchEvent) => (changedPath: string) => {
+    if (evt !== 'unlinkDir' && isRecentSelfWrite(changedPath)) return;
+    pending.set(changedPath, evt);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      processBatch().catch(() => {});
     }, 450);
   };
 
-  watcher.on('add', handleChange);
-  watcher.on('change', handleChange);
-  watcher.on('unlink', handleChange);
+  watcher.on('add', handle('add'));
+  watcher.on('change', handle('change'));
+  watcher.on('unlink', handle('unlink'));
+  watcher.on('unlinkDir', handle('unlinkDir'));
 }
 
 async function runWorldIntakeSyncAndNotify(worldSlug: string): Promise<IntakeSyncReport> {
@@ -280,6 +567,7 @@ function registerIpcHandlers(): void {
       indexEngine.close();
     }
     indexEngine = new IndexEngine(getIndexDbPath());
+    store.setEntryLocator((worldSlug, entryId) => indexEngine?.getEntryRelativePath(worldSlug, entryId) ?? null);
     await indexEngine.rebuildWorkspace(store);
     await startWorkspaceWatcher(rootPath);
     await refreshIntakeWatchers();
@@ -297,6 +585,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('workspace:update-config', async (_e, patch: Partial<WorkspaceConfig>) => {
     return requireStore().updateWorkspaceConfig(patch);
+  });
+
+  ipcMain.handle('workspace:list-worlds', async () => {
+    return requireStore().listWorlds();
   });
 
   ipcMain.handle('workspace:rebuild-index', async () => {
@@ -317,7 +609,8 @@ function registerIpcHandlers(): void {
       patch: Partial<Pick<WorldConfig, 'name' | 'subtitle' | 'medium' | 'coverAssetId' | 'theme' | 'entityTypes'>>
     ) => {
       const updated = await requireStore().updateWorld(worldSlug, patch);
-      await requireIndex().syncWorld(requireStore(), updated);
+      // Only the World's name lives in the index; theme/type edits don't need a re-scan
+      requireIndex().upsertWorld(updated);
       return updated;
     }
   );
@@ -337,28 +630,60 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('entry:create', async (_e, input: CreateEntryInput) => {
     const created = await requireStore().createEntry(input);
-    const worlds = await requireStore().listWorlds();
-    const world = worlds.find((w) => w.slug === input.worldSlug);
-    requireIndex().upsertEntry(created, world);
+    requireIndex().upsertEntry(created);
     return created;
   });
 
   ipcMain.handle('entry:update', async (_e, input: UpdateEntryInput) => {
     const s = requireStore();
+    const idx = requireIndex();
+    const previousPath = idx.getEntryRelativePath(input.worldSlug, input.id);
     const updated = await s.updateEntry(input);
-    const worlds = await s.listWorlds();
-    const world = worlds.find((w) => w.slug === input.worldSlug);
-    requireIndex().upsertEntry(updated, world);
+    if (previousPath && previousPath !== updated.relativePath) idx.removeEntryByPath(input.worldSlug, previousPath);
+    idx.upsertEntry(updated);
     if (updated.conflictCopy) {
       const copy = await s.readEntryById(input.worldSlug, updated.conflictCopy.id);
-      if (copy) requireIndex().upsertEntry(copy, world);
+      if (copy) idx.upsertEntry(copy);
     }
     return updated;
   });
 
   ipcMain.handle('entry:delete', async (_e, worldSlug: string, id: string) => {
     await requireStore().deleteEntry(worldSlug, id);
-    requireIndex().removeEntry(id);
+    requireIndex().removeEntry(worldSlug, id);
+  });
+
+  // After a rename: point every [[Old Title]] link in the World at the new title
+  ipcMain.handle('entry:rename-links', async (_e, worldSlug: string, entryId: string, oldTitle: string) => {
+    const s = requireStore();
+    const idx = requireIndex();
+    const target = await s.readEntryById(worldSlug, entryId);
+    if (!target || !oldTitle?.trim() || oldTitle.trim() === target.title) return { updatedEntries: 0 };
+    const oldKey = oldTitle.trim().toLowerCase();
+    const candidates = (await s.listAllEntriesInWorld(worldSlug)).filter(
+      (e) => e.id !== entryId && extractWikilinks(e.body).some((l) => l.target.toLowerCase() === oldKey)
+    );
+    let updatedEntries = 0;
+    for (const source of candidates) {
+      const nextBody = rewriteWikilinks(source.body, [oldTitle.trim()], target.title);
+      if (nextBody === source.body) continue;
+      const updated = await s.updateEntry({ worldSlug, id: source.id, body: nextBody, baseBody: source.body });
+      idx.upsertEntry(updated);
+      if (!updated.conflictCopy) updatedEntries++;
+    }
+    return { updatedEntries };
+  });
+
+  ipcMain.handle('hygiene:id-conflicts', async (_e, worldSlug: string) => {
+    return requireIndex().getDuplicateIdConflicts(worldSlug);
+  });
+
+  ipcMain.handle('hygiene:reassign-id', async (_e, worldSlug: string, relativePath: string) => {
+    const s = requireStore();
+    const entry = await s.reassignEntryId(worldSlug, relativePath);
+    const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+    if (world) await requireIndex().syncWorld(s, world);
+    return entry;
   });
 
   ipcMain.handle('entry:backlinks', async (_e, worldSlug: string, entryId: string) => {
@@ -487,7 +812,7 @@ function registerIpcHandlers(): void {
         await win.loadFile(tempHtmlPath);
         const pdfBuffer = await win.webContents.printToPDF({
           printBackground: true,
-          margins: { marginType: 'default' },
+          margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
         });
         await fs.writeFile(saveRes.filePath, pdfBuffer);
       } finally {
@@ -496,6 +821,7 @@ function registerIpcHandlers(): void {
       }
     }
 
+    openableExportPaths.add(path.resolve(saveRes.filePath));
     return {
       outputPath: saveRes.filePath,
       entryCount: rendered.entryCount,
@@ -504,6 +830,9 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('shell:open-local-file', async (_e, filePath: string) => {
+    if (typeof filePath !== 'string' || !canOpenLocalFile(filePath)) {
+      throw new Error('Loreloom can only open exported files and non-executable files inside the workspace.');
+    }
     await shell.openPath(filePath);
   });
 
@@ -520,18 +849,9 @@ function registerIpcHandlers(): void {
     });
     if (saveRes.canceled || !saveRes.filePath) return null;
 
-    const worldDir = s.worldDir(world.slug);
     const destZip = saveRes.filePath;
-    if (process.platform === 'win32') {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Compress-Archive -Path "${worldDir}\\*" -DestinationPath "${destZip}" -Force`,
-      ]);
-    } else {
-      await execFileAsync('zip', ['-r', destZip, '.'], { cwd: worldDir });
-    }
+    await zipFolder(s.worldDir(world.slug), destZip);
+    openableExportPaths.add(path.resolve(destZip));
     return { outputPath: destZip };
   });
 
@@ -627,50 +947,41 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('update:has-token', async () => {
-    const settings = await readAppSettings();
-    return Boolean(settings.githubUpdateToken && settings.githubUpdateToken.trim());
+    return Boolean(await getUpdateToken());
   });
 
   ipcMain.handle('update:set-token', async (_e, token: string | null) => {
-    const settings = await readAppSettings();
-    const updated: AppSettings = { ...settings };
-    if (token && token.trim()) {
-      updated.githubUpdateToken = token.trim();
-    } else {
-      delete updated.githubUpdateToken;
-    }
-    await writeAppSettings(updated);
+    await setUpdateToken(typeof token === 'string' ? token : null);
   });
 
   ipcMain.handle('update:check', async () => {
-    const settings = await readAppSettings();
     return checkLatestGitHubRelease({
       currentVersion: app.getVersion(),
-      token: settings.githubUpdateToken ?? null,
+      token: await getUpdateToken(),
     });
   });
 
-  ipcMain.handle('update:download-install', async (_e, installerApiUrl: string, filename: string) => {
-    const settings = await readAppSettings();
-    const headers: Record<string, string> = {
-      Accept: 'application/octet-stream',
-      'User-Agent': `Loreloom/${app.getVersion()}`,
-    };
-    if (settings.githubUpdateToken?.trim()) {
-      headers.Authorization = `Bearer ${settings.githubUpdateToken.trim()}`;
+  // The renderer's URL/filename are ignored: main re-checks the latest release itself, downloads
+  // only this repository's release assets, and verifies the installer before running it.
+  ipcMain.handle('update:download-install', async () => {
+    const token = await getUpdateToken();
+    const check = await checkLatestGitHubRelease({ currentVersion: app.getVersion(), token });
+    if (check.status !== 'update-available' || !check.installerApiUrl || !check.installerFilename) {
+      throw new Error(check.message || 'No installable update was found.');
     }
 
-    const res = await fetch(installerApiUrl, { headers, redirect: 'follow' });
-    if (!res.ok) {
-      throw new Error(`Could not download installer (HTTP ${res.status}).`);
-    }
-
-    const arrayBuf = await res.arrayBuffer();
-    const safeName = path.basename(filename || 'Loreloom-Setup.exe');
+    const bytes = await downloadReleaseAsset(check.installerApiUrl, token);
+    const safeName = path.basename(check.installerFilename);
     const outDir = path.join(os.tmpdir(), 'loreloom-update');
     await fs.mkdir(outDir, { recursive: true });
     const installerPath = path.join(outDir, safeName);
-    await fs.writeFile(installerPath, Buffer.from(arrayBuf));
+    await fs.writeFile(installerPath, bytes);
+
+    const verdict = await verifyInstaller(installerPath, bytes, safeName, check.checksumsApiUrl, token);
+    if (!verdict.ok) {
+      await fs.unlink(installerPath).catch(() => {});
+      throw new Error(`${verdict.reason} The update was not installed. Download it from the Releases page instead.`);
+    }
 
     const openErr = await shell.openPath(installerPath);
     if (openErr) {
@@ -706,6 +1017,7 @@ function createWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
@@ -755,14 +1067,33 @@ function createWindow(): void {
   }
 }
 
+// One Loreloom per machine: two instances would share index.db and race on manifest writes
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(() => {
-  protocol.handle('loreloom-asset', (request) => {
+  if (!hasSingleInstanceLock) return;
+  protocol.handle('loreloom-asset', async (request) => {
     try {
       if (!store) return new Response('No workspace open', { status: 404 });
       const url = new URL(request.url);
       const worldSlug = decodeURIComponent(url.hostname);
       const relPath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
       const absPath = store.resolveAssetAbsolutePath(worldSlug, relPath);
+      const thumbSize = Number(url.searchParams.get('thumb'));
+      if (THUMBNAIL_SIZES.has(thumbSize)) {
+        const thumbPath = await getThumbnail(absPath, thumbSize).catch(() => null);
+        if (thumbPath) return net.fetch(pathToFileURL(thumbPath).toString());
+      }
       return net.fetch(pathToFileURL(absPath).toString());
     } catch {
       return new Response('Asset not found', { status: 404 });

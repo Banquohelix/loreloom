@@ -24,6 +24,8 @@ import type { EntrySummary, StudioAppearance, WorldConfig } from '@shared/types'
 import type { ActiveView } from '@shared/tab-utils';
 import { EntityIcon } from './IconBadge';
 
+
+const FOLDER_PAGE = 150;
 export type { ActiveView };
 
 interface SidebarProps {
@@ -81,6 +83,8 @@ export function Sidebar({
 }: SidebarProps) {
   const [worldMenuOpen, setWorldMenuOpen] = useState(false);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  /** Large folders render the first FOLDER_PAGE entries until expanded (keeps the tree fast at 1000s of entries). */
+  const [fullyShownFolders, setFullyShownFolders] = useState<Record<string, boolean>>({});
 
   const countsByType = useMemo(() => {
     const map: Record<string, number> = {};
@@ -337,7 +341,7 @@ export function Sidebar({
                       </button>
                       {!collapsed && (
                         <div className="pl-4 space-y-0.5 mt-0.5">
-                          {items.map((item) => {
+                          {(fullyShownFolders[folder] ? items : items.slice(0, FOLDER_PAGE)).map((item) => {
                             const isActive =
                               activeView.kind === 'entry' && activeView.entryId === item.id;
                             return (
@@ -354,6 +358,14 @@ export function Sidebar({
                               </button>
                             );
                           })}
+                          {!fullyShownFolders[folder] && items.length > FOLDER_PAGE && (
+                            <button
+                              onClick={() => setFullyShownFolders((prev) => ({ ...prev, [folder]: true }))}
+                              className="w-full px-2 py-1 rounded-md text-xs text-left text-amber-600 hover:underline cursor-pointer"
+                            >
+                              Show all {items.length} entries
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

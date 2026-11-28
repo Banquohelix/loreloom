@@ -379,7 +379,9 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
                   {item.kind === 'art' && asset ? (
                     <div>
                       <img
-                        src={bridge.getAssetUrl(world.slug, asset.relativePath)}
+                        src={bridge.getThumbnailUrl(world.slug, asset.relativePath, 1024)}
+                        loading="lazy"
+                        decoding="async"
                         alt={asset.title}
                         draggable={false}
                         className="w-full h-auto block pointer-events-none"
@@ -520,7 +522,9 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
                     className="group relative aspect-video rounded-xl overflow-hidden border border-[var(--studio-border)] hover:ring-2 hover:ring-amber-500 cursor-pointer"
                   >
                     <img
-                      src={bridge.getAssetUrl(world.slug, a.relativePath)}
+                      src={bridge.getThumbnailUrl(world.slug, a.relativePath, 256)}
+                      loading="lazy"
+                      decoding="async"
                       alt={a.title}
                       className="w-full h-full object-cover"
                     />

@@ -425,7 +425,7 @@ export function EntryEditor({
       {coverAsset && (
         <div className="relative h-56 w-full group overflow-hidden border-b border-[var(--world-canvas-border)]">
           <img
-            src={bridge.getAssetUrl(world.slug, coverAsset.relativePath)}
+            src={bridge.getThumbnailUrl(world.slug, coverAsset.relativePath, 1600)}
             alt={coverAsset.title}
             className="w-full h-full object-cover"
           />
@@ -472,7 +472,7 @@ export function EntryEditor({
           {portraitAsset && (
             <div className="relative group shrink-0">
               <img
-                src={bridge.getAssetUrl(world.slug, portraitAsset.relativePath)}
+                src={bridge.getThumbnailUrl(world.slug, portraitAsset.relativePath, 256)}
                 alt={portraitAsset.title}
                 className="w-20 h-20 rounded-2xl object-cover border border-[var(--world-canvas-border)] shadow-sm"
               />
@@ -641,7 +641,9 @@ export function EntryEditor({
                     className="group relative aspect-video rounded-xl overflow-hidden border border-[var(--studio-border)] hover:ring-2 hover:ring-amber-500 transition cursor-pointer text-left"
                   >
                     <img
-                      src={bridge.getAssetUrl(world.slug, asset.relativePath)}
+                      src={bridge.getThumbnailUrl(world.slug, asset.relativePath, 256)}
+                      loading="lazy"
+                      decoding="async"
                       alt={asset.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition"
                     />

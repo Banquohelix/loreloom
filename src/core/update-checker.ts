@@ -4,6 +4,32 @@ export const GITHUB_OWNER = 'Banquohelix';
 export const GITHUB_REPO = 'loreloom';
 export const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
 
+/** SHA-1 thumbprint of scripts/signing/LoreloomStudio.cer (CN=Loreloom Studio). */
+export const LORELOOM_SIGNING_THUMBPRINT = 'A719D95143DB2A7EF63D7668B97E8B046A9D1FCF';
+
+export const CHECKSUMS_ASSET_NAME = 'SHA256SUMS.txt';
+
+const TRUSTED_ASSET_URL = new RegExp(
+  `^https://api\\.github\\.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/assets/\\d+$`,
+  'i'
+);
+
+/** Only release assets of this repository may be downloaded (and receive the GitHub token). */
+export function isTrustedReleaseAssetUrl(url: string | undefined | null): url is string {
+  return typeof url === 'string' && TRUSTED_ASSET_URL.test(url);
+}
+
+/** Finds `filename`'s hash in `sha256sum`-style text (`<hex>  <name>` or `<hex> *<name>`). */
+export function findSha256ForFile(sumsText: string, filename: string): string | null {
+  for (const line of sumsText.split(/\r?\n/)) {
+    const m = line.trim().match(/^([a-f0-9]{64})\s+\*?(.+)$/i);
+    // GitHub publishes "Loreloom Setup 1.0.0.exe" as "Loreloom.Setup.1.0.0.exe"
+    const norm = (n: string) => n.trim().replace(/ /g, '.').toLowerCase();
+    if (m && norm(m[2]) === norm(filename)) return m[1].toLowerCase();
+  }
+  return null;
+}
+
 export function parseSemver(version: string): [number, number, number] {
   const clean = version.trim().replace(/^v/i, '').split('-')[0];
   const parts = clean.split('.').map((n) => Number.parseInt(n, 10) || 0);
@@ -79,6 +105,7 @@ export async function checkLatestGitHubRelease(options: {
     const setupAsset =
       assets.find((a) => /setup.*\.exe$/i.test(a.name)) ??
       assets.find((a) => /\.exe$/i.test(a.name));
+    const checksumsAsset = assets.find((a) => a.name.toLowerCase() === CHECKSUMS_ASSET_NAME.toLowerCase());
 
     const cmp = compareSemver(options.currentVersion, latestVersion);
     if (cmp < 0) {
@@ -87,8 +114,9 @@ export async function checkLatestGitHubRelease(options: {
         currentVersion: options.currentVersion,
         latestVersion,
         releaseUrl: data.html_url || RELEASES_PAGE_URL,
-        installerApiUrl: setupAsset?.url,
+        installerApiUrl: isTrustedReleaseAssetUrl(setupAsset?.url) ? setupAsset?.url : undefined,
         installerFilename: setupAsset?.name,
+        checksumsApiUrl: isTrustedReleaseAssetUrl(checksumsAsset?.url) ? checksumsAsset?.url : undefined,
         releaseNotes: data.body?.trim() || '',
       };
     }

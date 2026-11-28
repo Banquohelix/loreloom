@@ -96,6 +96,7 @@ export default function App() {
   }, []);
   const saveQueueRef = useRef(new Map<string, Promise<UpdateEntryResult | null>>());
   const currentEntryRef = useRef<Entry | null>(null);
+  const entriesRef = useRef<EntrySummary[]>([]);
   const splitEntryRef = useRef<Entry | null>(null);
   const activeWorldSlugRef = useRef<string | null>(null);
   const [appVersion, setAppVersion] = useState('0.3.0');
@@ -116,6 +117,7 @@ export default function App() {
   }, [workspace, activeWorldSlug]);
 
   currentEntryRef.current = currentEntry;
+  entriesRef.current = entries;
   splitEntryRef.current = splitEntry;
   activeWorldSlugRef.current = activeWorldSlug;
 
@@ -273,8 +275,8 @@ export default function App() {
   useEffect(() => {
     return bridge.onWorkspaceChanged(async (evt) => {
       if (workspace && evt.kind === 'world') {
-        const state = await bridge.openWorkspace(workspace.rootPath);
-        setWorkspace(state);
+        const worlds = await bridge.listWorlds().catch(() => null);
+        if (worlds) setWorkspace((prev) => (prev ? { ...prev, worlds } : prev));
       }
       if (activeWorldSlug && (!evt.worldSlug || evt.worldSlug === activeWorldSlug)) {
         await refreshWorldData(activeWorldSlug);
@@ -379,6 +381,14 @@ export default function App() {
         .catch(() => null)
         .then(async () => {
           try {
+            // Links still resolve by the old title until the save lands, so count them first
+            const previousTitle = entriesRef.current.find((e) => e.id === entryId)?.title;
+            const isRename =
+              patch.title !== undefined && previousTitle !== undefined && patch.title.trim() !== previousTitle;
+            const linksToOldTitle = isRename
+              ? await bridge.getBacklinks(worldSlug, entryId).catch(() => [])
+              : [];
+
             const updated = await bridge.updateEntry({ worldSlug, id: entryId, ...patch });
             const { conflictCopy, ...entry } = updated;
             setCurrentEntry((cur) => (cur && cur.id === entry.id ? entry : cur));
@@ -389,8 +399,26 @@ export default function App() {
                 9000
               );
             }
+
+            if (isRename && previousTitle && linksToOldTitle.length > 0) {
+              const sources = new Set(linksToOldTitle.map((b) => b.sourceId)).size;
+              const ok = window.confirm(
+                `Update links to the renamed page?\n\n${sources} ${sources === 1 ? 'page links' : 'pages link'} to [[${previousTitle}]]. Change them to [[${entry.title}]]?`
+              );
+              if (ok) {
+                const res = await bridge.renameEntryLinks(worldSlug, entryId, previousTitle);
+                showToast(`Updated links in ${res.updatedEntries} ${res.updatedEntries === 1 ? 'page' : 'pages'}.`);
+              }
+            }
+
             if (activeWorldSlugRef.current === worldSlug) {
-              await refreshWorldData(worldSlug);
+              if (conflictCopy || isRename) {
+                await refreshWorldData(worldSlug);
+              } else {
+                // Patch the one summary instead of re-fetching every entry and art asset per keystroke
+                const { body: _body, createdAt: _createdAt, extraFrontmatter: _extra, ...summary } = entry;
+                setEntries((prev) => [summary, ...prev.filter((e) => e.id !== summary.id)]);
+              }
               if (currentEntryRef.current?.id === entryId) {
                 const bl = await bridge.getBacklinks(worldSlug, entryId);
                 if (currentEntryRef.current?.id === entryId) setBacklinks(bl);
