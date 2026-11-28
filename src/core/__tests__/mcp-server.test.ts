@@ -3,11 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { WorkspaceStore } from '../workspace-store';
 import { IndexEngine } from '../index-engine';
-import { startLoreloomMcpServer, type RunningMcpServer } from '../../../electron/mcp-server';
+import { FailedAuthLimiter, startLoreloomMcpServer, type McpAuth, type RunningMcpServer } from '../../../electron/mcp-server';
 
 /** D9: the MCP endpoint end to end, with a real MCP client, plus the Claude Desktop stdio bridge. */
 describe('Loreloom MCP server', () => {
@@ -17,6 +18,7 @@ describe('Loreloom MCP server', () => {
   let store: WorkspaceStore;
   let index: IndexEngine;
   let server: RunningMcpServer;
+  const auth: McpAuth = { localToken: token, remoteToken: null, remoteHosts: [] };
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'loreloom-mcp-srv-'));
@@ -28,7 +30,7 @@ describe('Loreloom MCP server', () => {
     await index.rebuildWorkspace(store);
     server = await startLoreloomMcpServer({
       port,
-      token,
+      auth: () => auth,
       version: 'test',
       context: () => ({ store, index, allowWrites: true, markDrafts: false }),
     });
@@ -76,9 +78,17 @@ describe('Loreloom MCP server', () => {
     expect(otherPath.status).toBe(404);
   });
 
-  it('bridges stdio to the endpoint for Claude Desktop', async () => {
-    const bridge = spawn(process.execPath, [path.resolve(__dirname, '../../../electron/mcp-bridge.ts')], {
-      env: { ...process.env, LORELOOM_MCP_URL: server.url, LORELOOM_MCP_TOKEN: token },
+  it.each([
+    ['environment variables (Claude Desktop)', [] as string[], { LORELOOM_MCP_URL: '', LORELOOM_MCP_TOKEN: '' }],
+    ['--url/--token arguments (Grok Bot STDIO)', ['--url', '', '--token', ''], {}],
+  ])('bridges stdio to the endpoint via %s', async (_label, argTemplate, envTemplate) => {
+    const args = argTemplate.length ? ['--url', server.url, '--token', token] : [];
+    const env = Object.keys(envTemplate).length ? { LORELOOM_MCP_URL: server.url, LORELOOM_MCP_TOKEN: token } : {};
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.LORELOOM_MCP_URL;
+    delete cleanEnv.LORELOOM_MCP_TOKEN;
+    const bridge = spawn(process.execPath, [path.resolve(__dirname, '../../../electron/mcp-bridge.ts'), ...args], {
+      env: { ...cleanEnv, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const lines: string[] = [];
@@ -98,5 +108,64 @@ describe('Loreloom MCP server', () => {
     const replies = lines.map((l) => JSON.parse(l));
     expect(replies.find((r) => r.id === 1)?.result?.serverInfo?.name).toBe('loreloom');
     expect(JSON.stringify(replies.find((r) => r.id === 2)?.result)).toContain('A courier in the undercity.');
+  });
+  it('lets remote assistants in only through the tunnel host with the remote token', async () => {
+    const list = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
+    // fetch() can't set Host, so send it the way cloudflared does
+    const remoteFetch = (tokenValue: string, host = 'ash-sea.trycloudflare.com') =>
+      new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            path: '/mcp',
+            method: 'POST',
+            headers: {
+              Host: host,
+              'Cf-Connecting-Ip': '203.0.113.7',
+              'Cf-Ray': 'abc123',
+              'Content-Type': 'application/json',
+              Accept: 'application/json, text/event-stream',
+              Authorization: `Bearer ${tokenValue}`,
+            },
+          },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          }
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify(list));
+      });
+
+    // Remote access off: refused even with the local token
+    expect(await remoteFetch(token)).toBe(403);
+
+    auth.remoteToken = 'remote-token-abcdefghijkl';
+    auth.remoteHosts = ['ash-sea.trycloudflare.com'];
+    expect(await remoteFetch('remote-token-abcdefghijkl')).toBe(200);
+    expect(await remoteFetch(token)).toBe(401); // the local token doesn't work remotely
+    expect(await remoteFetch('remote-token-abcdefghijkl', 'evil.example.com')).toBe(403);
+    // Locally, the remote token isn't accepted either
+    const local = await fetch(server.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer remote-token-abcdefghijkl' },
+      body: JSON.stringify(list),
+    });
+    expect(local.status).toBe(401);
+    auth.remoteToken = null;
+    auth.remoteHosts = [];
+  });
+
+  it('locks out a remote caller after repeated wrong tokens', () => {
+    let now = 1_000_000;
+    const limiter = new FailedAuthLimiter(() => now);
+    for (let i = 0; i < 9; i++) limiter.recordFailure('remote:1.2.3.4');
+    expect(limiter.isBlocked('remote:1.2.3.4')).toBe(false);
+    limiter.recordFailure('remote:1.2.3.4');
+    expect(limiter.isBlocked('remote:1.2.3.4')).toBe(true);
+    expect(limiter.isBlocked('remote:5.6.7.8')).toBe(false);
+    now += 16 * 60_000;
+    expect(limiter.isBlocked('remote:1.2.3.4')).toBe(false);
   });
 });

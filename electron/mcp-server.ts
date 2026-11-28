@@ -14,9 +14,19 @@ const INSTRUCTIONS = [
   'Prefer update_entry with append over replacing bodies. New entries may be tagged needs-triage for the user to review.',
 ].join('\n');
 
+/** Who may connect. Read on every request, so tokens and tunnel hosts can change without a restart. */
+export interface McpAuth {
+  /** Token for MCP apps on this PC */
+  localToken: string;
+  /** Token for remote assistants through the tunnel; null = remote access off */
+  remoteToken: string | null;
+  /** Public hostnames of the running tunnel, e.g. abc.trycloudflare.com or mcp.loreloom.io */
+  remoteHosts: string[];
+}
+
 export interface LoreloomMcpServerOptions {
   port: number;
-  token: string;
+  auth: () => McpAuth;
   version: string;
   /** Builds the tool context for one request (current store, index and settings). */
   context: (clientName: string | undefined) => McpToolContext | null;
@@ -31,6 +41,78 @@ function tokensMatch(given: string, expected: string): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** Remote callers that keep sending wrong tokens are blocked for a while. */
+const LOCKOUT_FAILURES = 10;
+const LOCKOUT_WINDOW_MS = 10 * 60_000;
+const LOCKOUT_MS = 15 * 60_000;
+
+export class FailedAuthLimiter {
+  private readonly failures = new Map<string, { count: number; first: number; blockedUntil: number }>();
+  constructor(private readonly now: () => number = Date.now) {}
+
+  isBlocked(key: string): boolean {
+    const f = this.failures.get(key);
+    return Boolean(f && f.blockedUntil > this.now());
+  }
+
+  recordFailure(key: string): void {
+    const t = this.now();
+    const f = this.failures.get(key);
+    if (!f || t - f.first > LOCKOUT_WINDOW_MS) {
+      this.failures.set(key, { count: 1, first: t, blockedUntil: 0 });
+      return;
+    }
+    f.count++;
+    if (f.count >= LOCKOUT_FAILURES) f.blockedUntil = t + LOCKOUT_MS;
+  }
+
+  recordSuccess(key: string): void {
+    this.failures.delete(key);
+  }
+}
+
+export type AuthDecision = { ok: true; remote: boolean } | { ok: false; status: number; message: string; remote: boolean };
+
+/**
+ * Decides whether a request may use the MCP endpoint. Local requests (Host 127.0.0.1/localhost,
+ * no Cloudflare headers) need the local token. Requests that came through the tunnel need the
+ * remote token, must be addressed to the tunnel's hostname, and are rate-limited on failures.
+ */
+export function authorizeMcpRequest(
+  headers: http.IncomingHttpHeaders,
+  port: number,
+  auth: McpAuth,
+  limiter: FailedAuthLimiter
+): AuthDecision {
+  const host = String(headers.host ?? '').toLowerCase();
+  const loopback = host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+  const viaCloudflare = Boolean(headers['cf-connecting-ip'] || headers['cf-ray']);
+  const remote = !loopback || viaCloudflare;
+  if (headers.origin) return { ok: false, status: 403, message: 'Browser requests are not allowed', remote };
+  const header = String(headers.authorization ?? '');
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+
+  if (!remote) {
+    return token && tokensMatch(token, auth.localToken)
+      ? { ok: true, remote }
+      : { ok: false, status: 401, message: 'Missing or wrong Loreloom token', remote };
+  }
+
+  const hostname = host.replace(/:\d+$/, '');
+  if (!auth.remoteToken) return { ok: false, status: 403, message: 'Remote access is turned off in Loreloom', remote };
+  // cloudflared normally keeps the public Host; accept a loopback Host too in case it rewrites it.
+  // Either way the remote token is still required below.
+  if (!loopback && !auth.remoteHosts.includes(hostname)) return { ok: false, status: 403, message: 'Forbidden host', remote };
+  const key = `remote:${String(headers['cf-connecting-ip'] ?? 'unknown')}`;
+  if (limiter.isBlocked(key)) return { ok: false, status: 429, message: 'Too many wrong tokens. Try again later.', remote };
+  if (!token || !tokensMatch(token, auth.remoteToken)) {
+    limiter.recordFailure(key);
+    return { ok: false, status: 401, message: 'Missing or wrong Loreloom remote token', remote };
+  }
+  limiter.recordSuccess(key);
+  return { ok: true, remote };
 }
 
 function deny(res: http.ServerResponse, status: number, message: string): void {
@@ -87,22 +169,19 @@ function buildMcpServer(options: LoreloomMcpServerOptions, ctx: McpToolContext):
 }
 
 /**
- * Starts Loreloom's MCP endpoint at http://127.0.0.1:<port>/mcp. Only this PC can reach it, every
- * request needs the bearer token, and browser requests (an Origin header) are refused so a web
- * page can't talk to it.
+ * Starts Loreloom's MCP endpoint at http://127.0.0.1:<port>/mcp. It listens on this PC only;
+ * remote assistants reach it through the Cloudflare tunnel (see mcp-tunnel.ts) with a separate
+ * token. Browser requests (an Origin header) are always refused so a web page can't talk to it.
  */
 export function startLoreloomMcpServer(options: LoreloomMcpServerOptions): Promise<RunningMcpServer> {
-  const allowedHosts = [`127.0.0.1:${options.port}`, `localhost:${options.port}`];
+  const limiter = new FailedAuthLimiter();
 
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       if (url.pathname !== '/mcp') return deny(res, 404, 'Not found. The Loreloom MCP endpoint is /mcp.');
-      if (!allowedHosts.includes(String(req.headers.host ?? ''))) return deny(res, 403, 'Forbidden host');
-      if (req.headers.origin) return deny(res, 403, 'Browser requests are not allowed');
-      const auth = String(req.headers.authorization ?? '');
-      const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-      if (!token || !tokensMatch(token, options.token)) return deny(res, 401, 'Missing or wrong Loreloom token');
+      const decision = authorizeMcpRequest(req.headers, options.port, options.auth(), limiter);
+      if (!decision.ok) return deny(res, decision.status, decision.message);
 
       const ua = String(req.headers['user-agent'] ?? '');
       const clientName = ua.split(/[\s/]/)[0] || undefined;

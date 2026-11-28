@@ -10,6 +10,7 @@ import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { LEGACY_MANIFEST_FILES, WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
 import { startLoreloomMcpServer, generateMcpToken, type RunningMcpServer } from './mcp-server';
+import { findCloudflared, normalizeHostname, startTunnel, type RunningTunnel, type TunnelMode, type TunnelStatus } from './mcp-tunnel';
 import type { McpChange } from '../src/core/mcp-tools';
 import { IndexEngine, extractPropertyLinks, extractWikilinks, rewritePropertyLinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
@@ -79,6 +80,13 @@ interface AppSettings {
   /** MCP bearer token encrypted with safeStorage, base64 (plain `mcpToken` only if encryption is unavailable). */
   mcpTokenEnc?: string;
   mcpToken?: string;
+  /** Remote access through a Cloudflare tunnel (off until the user turns it on). */
+  mcpRemote?: { enabled?: boolean; mode?: TunnelMode; hostname?: string };
+  /** Remote token and Cloudflare connector token, encrypted with safeStorage (plain only if unavailable). */
+  mcpRemoteTokenEnc?: string;
+  mcpRemoteToken?: string;
+  mcpTunnelTokenEnc?: string;
+  mcpTunnelToken?: string;
 }
 
 interface McpSettings {
@@ -216,6 +224,101 @@ async function setUpdateToken(token: string | null): Promise<void> {
 
 let mcpRunning: RunningMcpServer | null = null;
 let mcpError: string | null = null;
+let tunnel: RunningTunnel | null = null;
+let tunnelStatus: TunnelStatus = { running: false, publicUrl: null, error: null };
+/** Tokens and tunnel hosts the running server checks on every request. */
+let mcpAuthState: { localToken: string; remoteToken: string | null; remoteHosts: string[] } = {
+  localToken: '',
+  remoteToken: null,
+  remoteHosts: [],
+};
+
+type SecretField = 'mcpRemoteToken' | 'mcpTunnelToken';
+
+async function readSecret(field: SecretField): Promise<string | null> {
+  const settings = await readAppSettings();
+  const enc = settings[`${field}Enc` as const];
+  if (enc && safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+    } catch {
+      return null;
+    }
+  }
+  return settings[field] ?? null;
+}
+
+async function writeSecret(field: SecretField, value: string | null): Promise<void> {
+  const settings = await readAppSettings();
+  const updated: AppSettings = { ...settings };
+  delete updated[field];
+  delete updated[`${field}Enc` as const];
+  if (value) {
+    if (safeStorage.isEncryptionAvailable()) updated[`${field}Enc` as const] = safeStorage.encryptString(value).toString('base64');
+    else updated[field] = value;
+  }
+  await writeAppSettings(updated);
+}
+
+async function getRemoteToken(regenerate = false): Promise<string> {
+  const existing = regenerate ? null : await readSecret('mcpRemoteToken');
+  if (existing) return existing;
+  const token = generateMcpToken();
+  await writeSecret('mcpRemoteToken', token);
+  return token;
+}
+
+async function getRemoteSettings(): Promise<{ enabled: boolean; mode: TunnelMode; hostname: string }> {
+  const r = (await readAppSettings()).mcpRemote ?? {};
+  return { enabled: Boolean(r.enabled), mode: r.mode === 'named' ? 'named' : 'quick', hostname: r.hostname ?? '' };
+}
+
+function sendMcpStatusChanged(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mcp:status-changed');
+}
+
+function stopTunnel(): void {
+  tunnel?.stop();
+  tunnel = null;
+  tunnelStatus = { running: false, publicUrl: null, error: null };
+  mcpAuthState = { ...mcpAuthState, remoteToken: null, remoteHosts: [] };
+}
+
+/** Starts the Cloudflare tunnel when remote access is on and the local server is running. */
+async function applyRemoteAccess(port: number): Promise<void> {
+  stopTunnel();
+  const remote = await getRemoteSettings();
+  if (!remote.enabled || !mcpRunning) return;
+  const cloudflaredPath = await findCloudflared();
+  if (!cloudflaredPath) {
+    tunnelStatus = { running: false, publicUrl: null, error: "cloudflared isn't installed. Install it, then turn remote access off and on again." };
+    return;
+  }
+  const remoteToken = await getRemoteToken();
+  let connectorToken: string | undefined;
+  let hostname: string | undefined;
+  if (remote.mode === 'named') {
+    hostname = normalizeHostname(remote.hostname) ?? undefined;
+    connectorToken = (await readSecret('mcpTunnelToken')) ?? undefined;
+    if (!hostname || !connectorToken) {
+      tunnelStatus = { running: false, publicUrl: null, error: 'Enter your hostname and the tunnel token from Cloudflare first.' };
+      return;
+    }
+  }
+  tunnel = startTunnel({
+    cloudflaredPath,
+    mode: remote.mode,
+    localPort: port,
+    hostname,
+    connectorToken,
+    onStatus: (status) => {
+      tunnelStatus = status;
+      const host = status.publicUrl ? new URL(status.publicUrl).hostname : null;
+      mcpAuthState = { ...mcpAuthState, remoteToken: status.running ? remoteToken : null, remoteHosts: host ? [host] : [] };
+      sendMcpStatusChanged();
+    },
+  });
+}
 
 async function getMcpSettings(): Promise<McpSettings> {
   const settings = await readAppSettings();
@@ -262,6 +365,7 @@ async function installMcpBridge(): Promise<void> {
 
 /** Starts or stops the MCP endpoint to match the saved settings. */
 async function applyMcpSettings(): Promise<void> {
+  stopTunnel();
   if (mcpRunning) {
     await mcpRunning.close().catch(() => {});
     mcpRunning = null;
@@ -271,9 +375,10 @@ async function applyMcpSettings(): Promise<void> {
   if (!settings.enabled) return;
   try {
     await installMcpBridge().catch(() => {});
+    mcpAuthState = { localToken: await getMcpToken(), remoteToken: null, remoteHosts: [] };
     mcpRunning = await startLoreloomMcpServer({
       port: settings.port,
-      token: await getMcpToken(),
+      auth: () => mcpAuthState,
       version: app.getVersion(),
       context: (clientName) =>
         store && indexEngine
@@ -293,6 +398,7 @@ async function applyMcpSettings(): Promise<void> {
     const code = (err as NodeJS.ErrnoException).code;
     mcpError = code === 'EADDRINUSE' ? `Port ${settings.port} is already in use. Pick another port.` : (err as Error).message;
   }
+  await applyRemoteAccess(settings.port);
 }
 
 async function getMcpStatus() {
@@ -306,6 +412,15 @@ async function getMcpStatus() {
     bridgePath: mcpBridgePath(),
     execPath: process.execPath,
     portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE),
+    remote: {
+      ...(await getRemoteSettings()),
+      running: tunnelStatus.running,
+      publicUrl: tunnelStatus.publicUrl,
+      error: tunnelStatus.error,
+      token: await getRemoteToken(),
+      cloudflaredFound: Boolean(await findCloudflared()),
+      hasConnectorToken: Boolean(await readSecret('mcpTunnelToken')),
+    },
   };
 }
 
@@ -665,6 +780,28 @@ function registerIpcHandlers(): void {
     };
     await writeAppSettings({ ...settings, mcp: next });
     await applyMcpSettings();
+    return getMcpStatus();
+  });
+  ipcMain.handle(
+    'mcp:update-remote',
+    async (_e, patch: { enabled?: boolean; mode?: TunnelMode; hostname?: string; connectorToken?: string | null }) => {
+      const settings = await readAppSettings();
+      const current = settings.mcpRemote ?? {};
+      const next = {
+        enabled: typeof patch.enabled === 'boolean' ? patch.enabled : Boolean(current.enabled),
+        mode: patch.mode === 'named' || patch.mode === 'quick' ? patch.mode : current.mode ?? 'quick',
+        hostname: typeof patch.hostname === 'string' ? (normalizeHostname(patch.hostname) ?? patch.hostname.trim()) : current.hostname ?? '',
+      };
+      await writeAppSettings({ ...settings, mcpRemote: next });
+      if (patch.connectorToken !== undefined) await writeSecret('mcpTunnelToken', patch.connectorToken?.trim() || null);
+      const port = (await getMcpSettings()).port;
+      await applyRemoteAccess(port);
+      return getMcpStatus();
+    }
+  );
+  ipcMain.handle('mcp:regenerate-remote-token', async () => {
+    await getRemoteToken(true);
+    await applyRemoteAccess((await getMcpSettings()).port);
     return getMcpStatus();
   });
   ipcMain.handle('mcp:regenerate-token', async () => {
@@ -1290,6 +1427,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', async () => {
+  stopTunnel();
   if (mcpRunning) await mcpRunning.close().catch(() => {});
   if (watcher) await watcher.close();
   for (const w of intakeWatchers.values()) await w.close();

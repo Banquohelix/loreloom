@@ -341,6 +341,23 @@ export interface McpStatus {
   execPath: string;
   /** Portable builds run from a temporary folder, so their path changes between launches */
   portable: boolean;
+  /** Remote access through a Cloudflare tunnel, for assistants that run in the cloud */
+  remote: McpRemoteStatus;
+}
+
+export interface McpRemoteStatus {
+  enabled: boolean;
+  /** quick = random *.trycloudflare.com address; named = your own hostname */
+  mode: 'quick' | 'named';
+  hostname: string;
+  running: boolean;
+  /** e.g. https://abc.trycloudflare.com/mcp */
+  publicUrl: string | null;
+  error: string | null;
+  /** Separate token for remote assistants */
+  token: string;
+  cloudflaredFound: boolean;
+  hasConnectorToken: boolean;
 }
 
 export interface McpActivity {
@@ -506,6 +523,9 @@ export interface DesktopBridge {
   getMcpStatus: () => Promise<McpStatus>;
   updateMcpSettings: (patch: Partial<Pick<McpStatus, 'enabled' | 'port' | 'allowWrites' | 'markDrafts'>>) => Promise<McpStatus>;
   regenerateMcpToken: () => Promise<McpStatus>;
+  updateMcpRemote: (patch: { enabled?: boolean; mode?: 'quick' | 'named'; hostname?: string; connectorToken?: string | null }) => Promise<McpStatus>;
+  regenerateMcpRemoteToken: () => Promise<McpStatus>;
+  onMcpStatusChanged: (cb: () => void) => () => void;
   onMcpActivity: (cb: (activity: McpActivity) => void) => () => void;
   listTrash: (worldSlug: string) => Promise<TrashItem[]>;
   restoreTrashItem: (worldSlug: string, itemId: string) => Promise<TrashRestoreResult>;
