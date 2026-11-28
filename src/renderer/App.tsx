@@ -42,6 +42,7 @@ import { ObsidianImportModal } from './components/ObsidianImportModal';
 import { IntakeSyncModal } from './components/IntakeSyncModal';
 import { WorldToolsModal } from './components/WorldToolsModal';
 import { TrashModal } from './components/TrashModal';
+import { AiAssistantsModal } from './components/AiAssistantsModal';
 import { ExportBibleModal } from './components/ExportBibleModal';
 import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
@@ -130,6 +131,7 @@ export default function App() {
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
   const [trashModalOpen, setTrashModalOpen] = useState(false);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
   const [exportBibleModalOpen, setExportBibleModalOpen] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
@@ -376,6 +378,18 @@ export default function App() {
       }
     });
   }, [bridge, workspace, activeWorldSlug, refreshWorldData, reloadOpenEntries]);
+
+  // An AI assistant changed something over MCP: refresh, reload open entries, and say what happened
+  useEffect(() => {
+    return bridge.onMcpActivity(async (activity) => {
+      const who = activity.client && !/bridge|node|undici/i.test(activity.client) ? activity.client : 'An AI assistant';
+      showToast(`${who} ${activity.action} "${activity.title}"`);
+      if (activeWorldSlug && activity.worldSlug === activeWorldSlug) {
+        await refreshWorldData(activeWorldSlug);
+        if (activity.kind === 'entry') await reloadOpenEntries(activeWorldSlug);
+      }
+    });
+  }, [bridge, activeWorldSlug, refreshWorldData, reloadOpenEntries, showToast]);
 
   // Flush debounced editor saves before the window closes
   useEffect(() => bridge.onBeforeClose(() => flushAllPendingSaves()), [bridge]);
@@ -701,6 +715,7 @@ export default function App() {
         { id: 'intake', label: 'Open Intake Folder Sync & AI Framework', category: 'Tools', run: () => setIntakeModalOpen(true) },
         { id: 'hygiene', label: 'Open World Cleanup & Art Auto-Linker', category: 'Tools', run: () => setWorldToolsModalOpen(true) },
         { id: 'trash', label: 'Open Trash (restore deleted items)', category: 'Tools', run: () => setTrashModalOpen(true) },
+        { id: 'ai-assistants', label: 'AI Assistants (connect Claude, ChatGPT, Grok)', category: 'Tools', run: () => setAiModalOpen(true) },
         { id: 'export-bible', label: 'Export Illustrated World Bible (PDF / HTML)', category: 'Export', run: () => setExportBibleModalOpen(true) },
         { id: 'backup-zip', label: `Backup "${activeWorld.name}" as .zip Snapshot`, category: 'Export', run: handleExportWorldZip },
         { id: 'theme', label: 'Customize World Theme & Style', category: 'Appearance', run: () => setThemeDrawerOpen(true) }
@@ -757,6 +772,7 @@ export default function App() {
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
         onOpenWorldToolsModal={() => setWorldToolsModalOpen(true)}
         onOpenTrash={() => setTrashModalOpen(true)}
+        onOpenAiAssistants={() => setAiModalOpen(true)}
         onOpenExportBibleModal={() => setExportBibleModalOpen(true)}
         onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
@@ -1134,6 +1150,8 @@ export default function App() {
           onClose={() => setNewEntryRequest(null)}
         />
       )}
+
+      {aiModalOpen && <AiAssistantsModal onClose={() => setAiModalOpen(false)} />}
 
       {trashModalOpen && activeWorld && (
         <TrashModal

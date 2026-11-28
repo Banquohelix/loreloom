@@ -12,6 +12,7 @@ import type {
   ImportReport,
   SearchHit,
   TrashItem,
+  McpStatus,
   UpdateEntryInput,
   VaultScanPreview,
   WorldConfig,
@@ -32,6 +33,19 @@ declare global {
  */
 function createBrowserPreviewBridge(): DesktopBridge {
   const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+  let previewMcp: McpStatus = {
+    enabled: false,
+    port: 47833,
+    allowWrites: true,
+    markDrafts: true,
+    running: false,
+    url: 'http://127.0.0.1:47833/mcp',
+    error: null,
+    token: 'preview-token',
+    bridgePath: String.raw`C:\Users\you\AppData\Roaming\Loreloom\mcp\loreloom-mcp-bridge.js`,
+    execPath: String.raw`C:\Users\you\AppData\Local\Programs\Loreloom\Loreloom.exe`,
+    portable: false,
+  };
   let previewTrash: TrashItem[] = [
     { id: 'entry/sample-1', kind: 'entry', title: 'Old Kael Draft', deletedAt: hoursAgo(2), originalName: 'characters/kael-draft.md' },
     { id: 'art/sample-2', kind: 'art', title: 'Rejected Gate Sketch', deletedAt: hoursAgo(30), originalName: 'gate-v1.png' },
@@ -364,6 +378,17 @@ function createBrowserPreviewBridge(): DesktopBridge {
       entries.find((e) => e.id === keepEntryId)!,
     findArtLinkSuggestions: async () => [],
     findDuplicateIds: async () => [],
+    getMcpStatus: async () => previewMcp,
+    updateMcpSettings: async (patch) => {
+      previewMcp = { ...previewMcp, ...patch, running: patch.enabled ?? previewMcp.enabled };
+      previewMcp.url = `http://127.0.0.1:${previewMcp.port}/mcp`;
+      return previewMcp;
+    },
+    regenerateMcpToken: async () => {
+      previewMcp = { ...previewMcp, token: `preview-${Date.now().toString(36)}` };
+      return previewMcp;
+    },
+    onMcpActivity: () => () => {},
     listTrash: async () => previewTrash,
     restoreTrashItem: async (_worldSlug, itemId) => {
       const item = previewTrash.find((t) => t.id === itemId);

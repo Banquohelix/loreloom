@@ -19,6 +19,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Bot,
   Sun,
 } from 'lucide-react';
 import type { EntrySummary, StudioAppearance, WorldConfig } from '@shared/types';
@@ -50,6 +51,7 @@ interface SidebarProps {
   onOpenIntakeModal: () => void;
   onOpenWorldToolsModal: () => void;
   onOpenTrash: () => void;
+  onOpenAiAssistants: () => void;
   onOpenExportBibleModal: () => void;
   onOpenUpdateModal: () => void;
   onOpenQuickSwitcher: () => void;
@@ -78,6 +80,7 @@ export function Sidebar({
   onOpenIntakeModal,
   onOpenWorldToolsModal,
   onOpenTrash,
+  onOpenAiAssistants,
   onOpenExportBibleModal,
   onOpenUpdateModal,
   onOpenQuickSwitcher,
@@ -411,6 +414,13 @@ export function Sidebar({
             >
               <Trash2 className="w-3.5 h-3.5" />
               Trash
+            </button>
+            <button
+              onClick={onOpenAiAssistants}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <Bot className="w-3.5 h-3.5" />
+              AI Assistants
             </button>
             <button
               onClick={onOpenExportBibleModal}
