@@ -9,8 +9,9 @@ Loreloom must run on multiple PCs and use the user's OneDrive or Google Drive fo
 ## Decision
 Store all authoritative data inside the synced Workspace folder as individual human-readable files:
 - `workspace.yaml` for workspace metadata
-- `worlds/<slug>/world.yaml` for World config, EntityTypes, and WorldTheme
-- `worlds/<slug>/art-manifest.yaml` + `worlds/<slug>/assets/*` for concept art
+- `worlds/<slug>/world.yaml` for World config and WorldTheme
+- `worlds/<slug>/records/{art,maps,boards,types}/<id>.yaml` for art metadata, maps, moodboards and EntityTypes, one file per record (see [ADR 0003](0003-one-file-per-record.md); before v0.6.9 these were shared manifests)
+- `worlds/<slug>/assets/*` for concept art images
 - `worlds/<slug>/entries/**/*.md` for Entries (YAML frontmatter + Markdown body)
 
 Store a rebuildable SQLite + FTS5 `LocalIndex` strictly outside the synced folder in machine-local AppData (`%APPDATA%/Loreloom/index.db`).

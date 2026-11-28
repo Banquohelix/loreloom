@@ -140,7 +140,8 @@ describe('data safety', () => {
     expect(listed).toHaveLength(1);
     expect(listed[0].missing).toBe(true);
 
-    const raw = await fs.readFile(manifest, 'utf8');
+    // The legacy manifest was migrated to a per-record file, which keeps the metadata
+    const raw = await fs.readFile(path.join(store.recordsDir(world.slug, 'art'), 'a1.yaml'), 'utf8');
     expect(raw).toContain('Hand-written caption');
     expect(raw).not.toContain('missing');
   });
