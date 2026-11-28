@@ -510,7 +510,9 @@ export function IntakeSyncModal({
                           className="accent-amber-600 shrink-0"
                         />
                         <img
-                          src={bridge.getAssetUrl(world.slug, asset.relativePath)}
+                          src={bridge.getThumbnailUrl(world.slug, asset.relativePath, 128)}
+                          loading="lazy"
+                          decoding="async"
                           alt={asset.title}
                           className="w-10 h-10 rounded-lg object-cover shrink-0 border border-[var(--studio-border)]"
                         />

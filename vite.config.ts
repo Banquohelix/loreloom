@@ -15,6 +15,7 @@ const CONTENT_SECURITY_POLICY = [
   "media-src 'self' blob: loreloom-asset:",
   "font-src 'self' data:",
   "connect-src 'self' loreloom-asset:",
+  "worker-src 'self' blob:",
   "object-src 'none'",
   "frame-src 'none'",
   "base-uri 'none'",

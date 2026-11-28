@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, EyeOff, RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import type { WorldConfig, WorldGraph } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { layoutGraphAsync } from '../lib/graph-layout-client';
 
 interface SimNode {
   id: string;
@@ -60,77 +61,32 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
     return { nodes: filteredNodes, edges: filteredEdges };
   }, [graph, typeFilter, hideIsolated]);
 
-  // Run deterministic force-directed layout whenever visibleGraph changes
+  // Lay out off the UI thread whenever the visible graph changes (Barnes–Hut, in a Web Worker)
+  const [layingOut, setLayingOut] = useState(false);
   useEffect(() => {
-    const count = visibleGraph.nodes.length;
-    if (count === 0) {
+    if (visibleGraph.nodes.length === 0) {
       setNodes([]);
       return;
     }
-
-    const radius = Math.max(180, Math.min(360, count * 14));
-    const sim: SimNode[] = visibleGraph.nodes.map((n, i) => {
-      const angle = (i / count) * Math.PI * 2;
-      return {
-        ...n,
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius,
-        vx: 0,
-        vy: 0,
-      };
+    let cancelled = false;
+    setLayingOut(true);
+    layoutGraphAsync(visibleGraph.nodes, visibleGraph.edges).then((positions) => {
+      if (cancelled) return;
+      const byId = new Map(positions.map((p) => [p.id, p]));
+      setNodes(
+        visibleGraph.nodes.map((n) => ({
+          ...n,
+          x: byId.get(n.id)?.x ?? 0,
+          y: byId.get(n.id)?.y ?? 0,
+          vx: 0,
+          vy: 0,
+        }))
+      );
+      setLayingOut(false);
     });
-
-    const byId = new Map<string, SimNode>(sim.map((n) => [n.id, n]));
-    const iterations = Math.min(140, Math.max(60, count * 2));
-
-    for (let iter = 0; iter < iterations; iter++) {
-      // Repulsion
-      for (let i = 0; i < sim.length; i++) {
-        for (let j = i + 1; j < sim.length; j++) {
-          const a = sim[i];
-          const b = sim[j];
-          const dx = b.x - a.x || 0.01;
-          const dy = b.y - a.y || 0.01;
-          const distSq = dx * dx + dy * dy + 25;
-          const force = 5200 / distSq;
-          const dist = Math.sqrt(distSq);
-          const fx = (dx / dist) * force;
-          const fy = (dy / dist) * force;
-          a.vx -= fx;
-          a.vy -= fy;
-          b.vx += fx;
-          b.vy += fy;
-        }
-      }
-
-      // Spring attraction along edges
-      for (const edge of visibleGraph.edges) {
-        const a = byId.get(edge.sourceId);
-        const b = byId.get(edge.targetId);
-        if (!a || !b) continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const targetDist = 115;
-        const force = (dist - targetDist) * 0.045;
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        a.vx += fx;
-        a.vy += fy;
-        b.vx -= fx;
-        b.vy -= fy;
-      }
-
-      // Gentle gravity toward center + damping
-      for (const n of sim) {
-        n.vx = (n.vx - n.x * 0.012) * 0.78;
-        n.vy = (n.vy - n.y * 0.012) * 0.78;
-        n.x += n.vx;
-        n.y += n.vy;
-      }
-    }
-
-    setNodes(sim);
+    return () => {
+      cancelled = true;
+    };
   }, [visibleGraph]);
 
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -272,7 +228,12 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
 
       {/* Interactive SVG Canvas */}
       <div className="flex-1 relative overflow-hidden">
-        {nodes.length === 0 ? (
+        {layingOut && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full text-[11px] bg-[var(--studio-surface)] border border-[var(--studio-border)] text-[var(--studio-muted)]">
+            Laying out {visibleGraph.nodes.length} entries…
+          </div>
+        )}
+        {nodes.length === 0 && !layingOut ? (
           <div className="h-full flex flex-col items-center justify-center p-8 text-center space-y-2">
             <p className="text-sm text-[var(--studio-muted)]">
               No connected entries match the current filter.

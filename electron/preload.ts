@@ -44,6 +44,11 @@ const bridge: DesktopBridge = {
       .split('/')
       .map(encodeURIComponent)
       .join('/')}`,
+  getThumbnailUrl: (worldSlug, relativePath, size) =>
+    `loreloom-asset://${encodeURIComponent(worldSlug)}/${relativePath
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}?thumb=${size}`,
 
   listMaps: (worldSlug) => ipcRenderer.invoke('map:list', worldSlug),
   createMap: (worldSlug, title, assetId) =>

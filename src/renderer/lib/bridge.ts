@@ -301,6 +301,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
         )
         .map(toSummary),
     getAssetUrl: (_worldSlug, relativePath) => relativePath,
+    getThumbnailUrl: (_worldSlug, relativePath) => relativePath,
     listMaps: async (worldSlug) => maps.filter((m) => m.worldSlug === worldSlug),
     createMap: async (worldSlug, title, assetId) => {
       const now = new Date().toISOString();

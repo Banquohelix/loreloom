@@ -340,7 +340,9 @@ The duplicates are moved to the World's .trash/entries folder.`
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <img
-                        src={bridge.getAssetUrl(world.slug, s.assetRelativePath)}
+                        src={bridge.getThumbnailUrl(world.slug, s.assetRelativePath, 128)}
+                        loading="lazy"
+                        decoding="async"
                         alt={s.assetTitle}
                         className="w-12 h-12 rounded-lg object-cover border border-[var(--studio-border)] shrink-0"
                       />

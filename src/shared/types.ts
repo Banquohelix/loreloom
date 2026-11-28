@@ -407,6 +407,8 @@ export interface DesktopBridge {
   deleteArtAsset: (worldSlug: string, assetId: string) => Promise<void>;
   getArtLinkedEntries: (worldSlug: string, assetId: string) => Promise<EntrySummary[]>;
   getAssetUrl: (worldSlug: string, relativePath: string) => string;
+  /** URL of a cached, downscaled copy (longest side `size` px) for grids, cards and pickers. */
+  getThumbnailUrl: (worldSlug: string, relativePath: string, size: 128 | 256 | 512 | 1024 | 1600) => string;
 
   // Interactive Pin Maps
   listMaps: (worldSlug: string) => Promise<WorldMapDef[]>;

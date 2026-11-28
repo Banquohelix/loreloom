@@ -269,6 +269,66 @@ function canOpenLocalFile(filePath: string): boolean {
   return resolved.startsWith(root + path.sep);
 }
 
+/**
+ * Downscaled thumbnails for grids, cards and pickers, cached in machine-local AppData (never in the
+ * synced folder). Keyed by source path + size + mtime, so edited images get fresh thumbnails.
+ */
+const THUMBNAIL_SIZES = new Set([128, 256, 512, 1024, 1600]);
+const thumbnailJobs = new Map<string, Promise<string | null>>();
+
+function getThumbnailDir(): string {
+  return path.join(app.getPath('userData'), 'thumbnails');
+}
+
+async function getThumbnail(absPath: string, size: number): Promise<string | null> {
+  const ext = path.extname(absPath).toLowerCase();
+  if (ext === '.gif') return null; // keep animation
+  const stat = await fs.stat(absPath);
+  const key = crypto
+    .createHash('sha1')
+    .update(`${absPath.toLowerCase()}|${stat.size}|${Math.floor(stat.mtimeMs)}|${size}`)
+    .digest('hex');
+  const existingJob = thumbnailJobs.get(key);
+  if (existingJob) return existingJob;
+
+  const job = (async () => {
+    const dir = getThumbnailDir();
+    for (const candidate of [path.join(dir, `${key}.jpg`), path.join(dir, `${key}.png`)]) {
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // not cached yet
+      }
+    }
+    let img = nativeImage.createFromPath(absPath);
+    if (img.isEmpty()) return null; // webp/avif: nativeImage can't decode, serve the original
+    const { width, height } = img.getSize();
+    if (Math.max(width, height) <= size) return null; // already small: original is fine
+    const scale = size / Math.max(width, height);
+    img = img.resize({
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      quality: 'good',
+    });
+    const transparent = ext === '.png' && bitmapHasTransparency(img.toBitmap());
+    const out = path.join(dir, `${key}.${transparent ? 'png' : 'jpg'}`);
+    await fs.mkdir(dir, { recursive: true });
+    const tmp = `${out}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, transparent ? img.toPNG() : img.toJPEG(84));
+    await fs.rename(tmp, out).catch(async () => {
+      await fs.unlink(tmp).catch(() => {});
+    });
+    return out;
+  })();
+  thumbnailJobs.set(key, job);
+  try {
+    return await job;
+  } finally {
+    thumbnailJobs.delete(key);
+  }
+}
+
 function requireStore(): WorkspaceStore {
   if (!store) throw new Error('Workspace not opened');
   return store;
@@ -1017,13 +1077,18 @@ if (!hasSingleInstanceLock) {
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
-  protocol.handle('loreloom-asset', (request) => {
+  protocol.handle('loreloom-asset', async (request) => {
     try {
       if (!store) return new Response('No workspace open', { status: 404 });
       const url = new URL(request.url);
       const worldSlug = decodeURIComponent(url.hostname);
       const relPath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
       const absPath = store.resolveAssetAbsolutePath(worldSlug, relPath);
+      const thumbSize = Number(url.searchParams.get('thumb'));
+      if (THUMBNAIL_SIZES.has(thumbSize)) {
+        const thumbPath = await getThumbnail(absPath, thumbSize).catch(() => null);
+        if (thumbPath) return net.fetch(pathToFileURL(thumbPath).toString());
+      }
       return net.fetch(pathToFileURL(absPath).toString());
     } catch {
       return new Response('Asset not found', { status: 404 });

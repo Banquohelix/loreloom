@@ -203,7 +203,9 @@ export function CollectionView({
                   <div className="h-40 w-full bg-black/5 dark:bg-white/5 overflow-hidden relative">
                     {art ? (
                       <img
-                        src={bridge.getAssetUrl(world.slug, art.relativePath)}
+                        src={bridge.getThumbnailUrl(world.slug, art.relativePath, 512)}
+                        loading="lazy"
+                        decoding="async"
                         alt={entry.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                       />
@@ -316,7 +318,9 @@ export function CollectionView({
                           >
                             {art && (
                               <img
-                                src={bridge.getAssetUrl(world.slug, art.relativePath)}
+                                src={bridge.getThumbnailUrl(world.slug, art.relativePath, 256)}
+                                loading="lazy"
+                                decoding="async"
                                 alt={entry.title}
                                 className="w-20 h-20 rounded-xl object-cover shrink-0 border border-[var(--world-canvas-border)]"
                               />
@@ -439,7 +443,9 @@ export function CollectionView({
                           >
                             {art && (
                               <img
-                                src={bridge.getAssetUrl(world.slug, art.relativePath)}
+                                src={bridge.getThumbnailUrl(world.slug, art.relativePath, 256)}
+                                loading="lazy"
+                                decoding="async"
                                 alt={entry.title}
                                 className="w-full h-24 object-cover rounded-lg mb-1.5"
                               />

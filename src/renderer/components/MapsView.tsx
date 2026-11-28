@@ -582,7 +582,9 @@ export function MapsView({
                       }`}
                     >
                       <img
-                        src={bridge.getAssetUrl(world.slug, a.relativePath)}
+                        src={bridge.getThumbnailUrl(world.slug, a.relativePath, 256)}
+                        loading="lazy"
+                        decoding="async"
                         alt={a.title}
                         className="w-full h-full object-cover"
                       />
