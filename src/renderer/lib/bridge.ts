@@ -394,6 +394,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
     exportWorldPromptFramework: async (worldSlug) =>
       `Preview://OneDrive/Loreloom/worlds/${worldSlug}/AI-PROMPT-FRAMEWORK.md`,
     onIntakeSynced: () => () => {},
+    onBeforeClose: () => () => {},
     getAppVersion: async () => '0.4.0',
     checkForUpdates: async () => ({
       status: 'up-to-date',

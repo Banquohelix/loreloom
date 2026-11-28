@@ -127,6 +127,11 @@ export function MapsView({
   };
 
   const handleDeleteMap = async (mapId: string) => {
+    const map = maps.find((m) => m.id === mapId);
+    const ok = window.confirm(
+      `Delete the map "${map?.title ?? 'Untitled'}" and its ${map?.pins.length ?? 0} pins?\n\nThe image stays in Concept Art. A copy of the map is kept in this World's .trash/maps folder.`
+    );
+    if (!ok) return;
     await bridge.deleteMap(world.slug, mapId);
     const remaining = maps.filter((m) => m.id !== mapId);
     setMaps(remaining);

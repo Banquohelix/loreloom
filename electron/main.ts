@@ -12,6 +12,7 @@ import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
+import { KeyedMutex } from '../src/core/keyed-mutex';
 import { checkLatestGitHubRelease } from '../src/core/update-checker';
 import {
   findArtLinkSuggestions,
@@ -49,6 +50,10 @@ let watcher: FSWatcher | null = null;
 const intakeWatchers = new Map<string, FSWatcher>();
 const importer = new ObsidianImporter();
 const intakeEngine = new IntakeEngine();
+/** One intake sync per World at a time (launch catch-up, watcher, and manual runs used to race). */
+const intakeLocks = new KeyedMutex();
+let closeAfterFlush = false;
+const wikilinkRepairDone = new Set<string>();
 
 interface AppSettings {
   workspacePath?: string;
@@ -135,6 +140,10 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
 }
 
 async function runWorldIntakeSyncAndNotify(worldSlug: string): Promise<IntakeSyncReport> {
+  return intakeLocks.run(`intake:${worldSlug}`, () => runWorldIntakeSyncUnlocked(worldSlug));
+}
+
+async function runWorldIntakeSyncUnlocked(worldSlug: string): Promise<IntakeSyncReport> {
   const s = requireStore();
   const idx = requireIndex();
   const settings = await readAppSettings();
@@ -217,6 +226,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('workspace:open', async (_e, rootPath: string) => {
     store = new WorkspaceStore(rootPath);
     const state = await store.ensureInitialized();
+
+    // Repair `\[\[wikilinks\]\]` escaped by the <= 0.6.5 editor before indexing or intake runs
+    if (!wikilinkRepairDone.has(rootPath)) {
+      wikilinkRepairDone.add(rootPath);
+      for (const world of state.worlds) {
+        await store.repairEscapedWikilinksInWorld(world.slug).catch(() => 0);
+      }
+    }
     const existingSettings = await readAppSettings();
     await writeAppSettings({ ...existingSettings, workspacePath: rootPath });
 
@@ -288,10 +305,15 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('entry:update', async (_e, input: UpdateEntryInput) => {
-    const updated = await requireStore().updateEntry(input);
-    const worlds = await requireStore().listWorlds();
+    const s = requireStore();
+    const updated = await s.updateEntry(input);
+    const worlds = await s.listWorlds();
     const world = worlds.find((w) => w.slug === input.worldSlug);
     requireIndex().upsertEntry(updated, world);
+    if (updated.conflictCopy) {
+      const copy = await s.readEntryById(input.worldSlug, updated.conflictCopy.id);
+      if (copy) requireIndex().upsertEntry(copy, world);
+    }
     return updated;
   });
 
@@ -616,6 +638,11 @@ function registerIpcHandlers(): void {
     setTimeout(() => app.quit(), 400);
   });
 
+  ipcMain.handle('app:close-ready', async () => {
+    closeAfterFlush = true;
+    mainWindow?.close();
+  });
+
   ipcMain.handle('shell:open-external', async (_e, url: string) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
       await shell.openExternal(url);
@@ -639,6 +666,36 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  // Never let a dropped file or clicked link replace the app (and lose unsaved edits)
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL();
+    if (url !== current) {
+      event.preventDefault();
+      if (url.startsWith('https://') || url.startsWith('http://')) {
+        shell.openExternal(url).catch(() => {});
+      }
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      shell.openExternal(url).catch(() => {});
+    }
+    return { action: 'deny' };
+  });
+
+  // Ask the renderer to flush debounced saves before closing; force-close after a timeout
+  mainWindow.on('close', (event) => {
+    if (closeAfterFlush || !mainWindow || mainWindow.webContents.isDestroyed()) return;
+    event.preventDefault();
+    mainWindow.webContents.send('app:before-close');
+    setTimeout(() => {
+      if (!closeAfterFlush) {
+        closeAfterFlush = true;
+        mainWindow?.close();
+      }
+    }, 4000);
   });
 
   mainWindow.once('ready-to-show', () => {

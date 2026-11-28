@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, GitBranch, Link2, Plus, Trash2, X } from 'lucide-react';
 import type {
   BacklinkRef,
@@ -8,6 +8,49 @@ import type {
   EntrySummary,
   WorldConfig,
 } from '@shared/types';
+
+/** Text property input that commits on blur, Enter, or unmount, so edits are never dropped. */
+function PropertyTextInput({
+  initialValue,
+  placeholder,
+  onCommit,
+}: {
+  initialValue: string;
+  placeholder: string;
+  onCommit: (value: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const valueRef = useRef(initialValue);
+  const committedRef = useRef(initialValue);
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+
+  const commit = () => {
+    if (valueRef.current !== committedRef.current) {
+      committedRef.current = valueRef.current;
+      onCommitRef.current(valueRef.current);
+    }
+  };
+
+  // Commit on unmount (e.g. navigating away with Ctrl+K never fires blur)
+  useEffect(() => () => commit(), []);
+
+  return (
+    <input
+      value={value}
+      onChange={(e) => {
+        valueRef.current = e.target.value;
+        setValue(e.target.value);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+      }}
+      placeholder={placeholder}
+      className="w-full rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] px-2.5 py-1.5 text-xs outline-none"
+    />
+  );
+}
 
 const PRESET_REL_LABELS = [
   'Allied with',
@@ -197,14 +240,11 @@ export function EntryInspector({
                     ))}
                   </select>
                 ) : (
-                  <input
-                    defaultValue={strVal}
-                    key={`${entry.id}-${field.key}`}
-                    onBlur={(e) => {
-                      if (e.target.value !== strVal) handleFieldChange(field.key, e.target.value);
-                    }}
+                  <PropertyTextInput
+                    key={`${entry.id}-${field.key}-${strVal}`}
+                    initialValue={strVal}
+                    onCommit={(value) => handleFieldChange(field.key, value)}
                     placeholder={`Enter ${field.label.toLowerCase()}…`}
-                    className="w-full rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] px-2.5 py-1.5 text-xs outline-none"
                   />
                 )}
               </div>

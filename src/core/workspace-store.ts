@@ -4,7 +4,9 @@ import crypto from 'node:crypto';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { cloneStarterEntityTypes } from '../shared/starter-types';
+import { normalizeBodyForCompare, repairEscapedWikilinks } from '../shared/wikilink-repair';
 import { getDefaultWorldTheme } from './theme-engine';
+import { KeyedMutex } from './keyed-mutex';
 import type {
   ArtAsset,
   ArtCategory,
@@ -15,6 +17,7 @@ import type {
   EntryRelationship,
   MoodboardDef,
   UpdateEntryInput,
+  UpdateEntryResult,
   WorkspaceConfig,
   WorkspaceState,
   WorldConfig,
@@ -60,6 +63,55 @@ async function atomicWriteFile(filePath: string, content: string | Buffer): Prom
   await fs.rename(tempPath, filePath);
 }
 
+/** Frontmatter keys Loreloom manages itself; everything else is preserved verbatim. */
+const MANAGED_FRONTMATTER_KEYS = new Set([
+  'id',
+  'title',
+  'type',
+  'secondaryTypes',
+  'relationships',
+  'tags',
+  'properties',
+  'coverAssetId',
+  'portraitAssetId',
+  'createdAt',
+  'updatedAt',
+]);
+
+/** js-yaml parses unquoted dates (`2024-01-01`) into Date objects; keep them as stable strings. */
+function normalizeYamlValue(value: unknown): unknown {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return String(value);
+    const iso = value.toISOString();
+    return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso;
+  }
+  if (Array.isArray(value)) return value.map(normalizeYamlValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, normalizeYamlValue(v)])
+    );
+  }
+  return value;
+}
+
+function trashStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+/** Moves a file or folder into a trash folder instead of deleting it permanently. */
+async function moveToTrash(sourcePath: string, trashDir: string, name: string): Promise<string> {
+  await fs.mkdir(trashDir, { recursive: true });
+  const dest = path.join(trashDir, `${trashStamp()}__${name}`);
+  try {
+    await fs.rename(sourcePath, dest);
+  } catch {
+    // Fallback for cross-device or locked folders: copy then remove
+    await fs.cp(sourcePath, dest, { recursive: true });
+    await fs.rm(sourcePath, { recursive: true, force: true });
+  }
+  return dest;
+}
+
 interface ArtManifestFile {
   assets: ArtAsset[];
 }
@@ -78,7 +130,14 @@ interface BoardsManifestFile {
  * and folder traversal behind a small, testable interface.
  */
 export class WorkspaceStore {
+  private readonly locks = new KeyedMutex();
+
   constructor(public readonly rootPath: string) {}
+
+  /** `<world>/.trash/<kind>` — ignored by the watcher, kept in the synced folder so it can be restored. */
+  public worldTrashDir(worldSlug: string, kind: 'entries' | 'assets' | 'maps' | 'boards'): string {
+    return path.join(this.worldDir(worldSlug), '.trash', kind);
+  }
 
   private workspaceConfigPath(): string {
     return path.join(this.rootPath, 'workspace.yaml');
@@ -228,7 +287,41 @@ export class WorkspaceStore {
   }
 
   async deleteWorld(worldSlug: string): Promise<void> {
-    await fs.rm(this.worldDir(worldSlug), { recursive: true, force: true });
+    const dir = this.worldDir(worldSlug);
+    if (!(await exists(dir))) return;
+    await moveToTrash(dir, path.join(this.rootPath, '.trash', 'worlds'), worldSlug);
+  }
+
+  /**
+   * One-time repair for files written by Loreloom <= 0.6.5, whose editor escaped `[[wikilinks]]`
+   * as `\[\[…\]\]`. Rewrites only files that contain the escaped form. Returns files repaired.
+   */
+  async repairEscapedWikilinksInWorld(worldSlug: string): Promise<number> {
+    const root = this.entriesDir(worldSlug);
+    if (!(await exists(root))) return 0;
+    let repaired = 0;
+    const walk = async (dir: string): Promise<void> => {
+      const items = await fs.readdir(dir, { withFileTypes: true });
+      for (const item of items) {
+        const fullPath = path.join(dir, item.name);
+        if (item.isDirectory()) {
+          await walk(fullPath);
+        } else if (item.isFile() && item.name.toLowerCase().endsWith('.md')) {
+          try {
+            const raw = await fs.readFile(fullPath, 'utf8');
+            const fixed = repairEscapedWikilinks(raw);
+            if (fixed !== raw) {
+              await atomicWriteFile(fullPath, fixed);
+              repaired++;
+            }
+          } catch {
+            // Skip files locked by OneDrive/Google Drive; they are retried on the next launch
+          }
+        }
+      }
+    };
+    await walk(root);
+    return repaired;
   }
 
   async listAllEntriesInWorld(worldSlug: string): Promise<Entry[]> {
@@ -308,7 +401,8 @@ export class WorkspaceStore {
 
       const properties: Record<string, EntryPropertyValue> = {};
       if (data.properties && typeof data.properties === 'object' && !Array.isArray(data.properties)) {
-        for (const [k, v] of Object.entries(data.properties as Record<string, unknown>)) {
+        for (const [k, rawV] of Object.entries(data.properties as Record<string, unknown>)) {
+          const v = normalizeYamlValue(rawV);
           if (
             typeof v === 'string' ||
             typeof v === 'number' ||
@@ -321,10 +415,17 @@ export class WorkspaceStore {
       }
 
       const body = parsed.content.replace(/^\r?\n/, '');
+      const createdAtRaw = data.createdAt instanceof Date ? data.createdAt.toISOString() : data.createdAt;
+      const updatedAtRaw = data.updatedAt instanceof Date ? data.updatedAt.toISOString() : data.updatedAt;
       const createdAt =
-        typeof data.createdAt === 'string' ? data.createdAt : stat.birthtime.toISOString();
+        typeof createdAtRaw === 'string' ? createdAtRaw : stat.birthtime.toISOString();
       const updatedAt =
-        typeof data.updatedAt === 'string' ? data.updatedAt : stat.mtime.toISOString();
+        typeof updatedAtRaw === 'string' ? updatedAtRaw : stat.mtime.toISOString();
+
+      const extraFrontmatter: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (!MANAGED_FRONTMATTER_KEYS.has(k)) extraFrontmatter[k] = normalizeYamlValue(v);
+      }
 
       return {
         id,
@@ -344,6 +445,7 @@ export class WorkspaceStore {
         updatedAt,
         excerpt: extractExcerpt(body),
         body,
+        ...(Object.keys(extraFrontmatter).length > 0 ? { extraFrontmatter } : {}),
       };
     } catch {
       return null;
@@ -368,6 +470,9 @@ export class WorkspaceStore {
     }
     if (entry.coverAssetId) frontmatter.coverAssetId = entry.coverAssetId;
     if (entry.portraitAssetId) frontmatter.portraitAssetId = entry.portraitAssetId;
+    for (const [k, v] of Object.entries(entry.extraFrontmatter ?? {})) {
+      if (!MANAGED_FRONTMATTER_KEYS.has(k) && v !== undefined) frontmatter[k] = v;
+    }
 
     return matter.stringify(entry.body || '', frontmatter);
   }
@@ -378,6 +483,10 @@ export class WorkspaceStore {
   }
 
   async createEntry(input: CreateEntryInput): Promise<Entry> {
+    return this.locks.run(`create:${input.worldSlug}`, () => this.createEntryUnlocked(input));
+  }
+
+  private async createEntryUnlocked(input: CreateEntryInput): Promise<Entry> {
     const now = new Date().toISOString();
     const folder = (input.folder ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     const targetDir = folder ? path.join(this.entriesDir(input.worldSlug), folder) : this.entriesDir(input.worldSlug);
@@ -419,11 +528,43 @@ export class WorkspaceStore {
     return entry;
   }
 
-  async updateEntry(input: UpdateEntryInput): Promise<Entry> {
-    const existing = await this.readEntryById(input.worldSlug, input.id);
-    if (!existing) {
-      throw new Error(`Entry not found: ${input.id}`);
-    }
+  /**
+   * Updates an Entry. Writes to the same Entry are serialized. If `baseBody` is given and the body on
+   * disk no longer matches it (another PC synced a change, or an intake update landed), the on-disk
+   * version is kept and the incoming edit is saved as a separate "conflict copy" Entry instead.
+   */
+  async updateEntry(input: UpdateEntryInput): Promise<UpdateEntryResult> {
+    return this.locks.run(`entry:${input.worldSlug}:${input.id}`, async () => {
+      const existing = await this.readEntryById(input.worldSlug, input.id);
+      if (!existing) {
+        throw new Error(`Entry not found: ${input.id}`);
+      }
+
+      if (
+        input.baseBody !== undefined &&
+        input.body !== undefined &&
+        normalizeBodyForCompare(existing.body) !== normalizeBodyForCompare(input.baseBody) &&
+        normalizeBodyForCompare(existing.body) !== normalizeBodyForCompare(input.body)
+      ) {
+        const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+        const copy = await this.createEntry({
+          worldSlug: input.worldSlug,
+          title: `${input.title ?? existing.title} (conflict copy ${stamp})`,
+          type: existing.type,
+          secondaryTypes: existing.secondaryTypes,
+          folder: existing.folder,
+          tags: Array.from(new Set([...(input.tags ?? existing.tags), 'conflict'])),
+          properties: input.properties ?? existing.properties,
+          body: input.body,
+        });
+        return { ...existing, conflictCopy: { id: copy.id, title: copy.title } };
+      }
+
+      return this.writeEntryUpdate(existing, input);
+    });
+  }
+
+  private async writeEntryUpdate(existing: Entry, input: UpdateEntryInput): Promise<Entry> {
 
     const oldFullPath = path.join(this.entriesDir(input.worldSlug), existing.relativePath);
     const nextFolder =
@@ -492,34 +633,54 @@ export class WorkspaceStore {
     return updated;
   }
 
+  /** Moves the Entry's file to `<world>/.trash/entries/` (restorable) rather than deleting it. */
   async deleteEntry(worldSlug: string, entryId: string): Promise<void> {
-    const existing = await this.readEntryById(worldSlug, entryId);
-    if (!existing) return;
-    const fullPath = path.join(this.entriesDir(worldSlug), existing.relativePath);
-    if (await exists(fullPath)) {
-      await fs.unlink(fullPath);
+    await this.locks.run(`entry:${worldSlug}:${entryId}`, async () => {
+      const existing = await this.readEntryById(worldSlug, entryId);
+      if (!existing) return;
+      const fullPath = path.join(this.entriesDir(worldSlug), existing.relativePath);
+      if (await exists(fullPath)) {
+        await moveToTrash(
+          fullPath,
+          this.worldTrashDir(worldSlug, 'entries'),
+          existing.relativePath.replace(/\//g, '__')
+        );
+      }
+    });
+  }
+
+  private async readArtManifest(worldSlug: string): Promise<ArtAsset[]> {
+    const manifestPath = this.artManifestPath(worldSlug);
+    if (!(await exists(manifestPath))) return [];
+    try {
+      const raw = await fs.readFile(manifestPath, 'utf8');
+      const parsed = yaml.load(raw) as ArtManifestFile | undefined;
+      return parsed && Array.isArray(parsed.assets) ? parsed.assets : [];
+    } catch {
+      return [];
     }
   }
 
+  private async writeArtManifest(worldSlug: string, assets: ArtAsset[]): Promise<void> {
+    const clean = assets.map(({ missing: _missing, ...rest }) => rest);
+    await atomicWriteFile(this.artManifestPath(worldSlug), yaml.dump({ assets: clean }));
+  }
+
+  /**
+   * Lists art assets. Image files dropped straight into `assets/` are added to the manifest, but
+   * records are NEVER removed on read: on a second PC the manifest often syncs before the images,
+   * and pruning would permanently erase captions, tags, categories and the IDs Entries link to.
+   * Records whose file is not on disk yet are returned with `missing: true`.
+   */
   async listArtAssets(worldSlug: string): Promise<ArtAsset[]> {
-    const manifestPath = this.artManifestPath(worldSlug);
+    return this.locks.run(`art:${worldSlug}`, () => this.listArtAssetsUnlocked(worldSlug));
+  }
+
+  private async listArtAssetsUnlocked(worldSlug: string): Promise<ArtAsset[]> {
     const assetsFolder = this.assetsDir(worldSlug);
     await fs.mkdir(assetsFolder, { recursive: true });
+    const assets = await this.readArtManifest(worldSlug);
 
-    let assets: ArtAsset[] = [];
-    if (await exists(manifestPath)) {
-      try {
-        const raw = await fs.readFile(manifestPath, 'utf8');
-        const parsed = yaml.load(raw) as ArtManifestFile | undefined;
-        if (parsed && Array.isArray(parsed.assets)) {
-          assets = parsed.assets;
-        }
-      } catch {
-        assets = [];
-      }
-    }
-
-    // Reconcile any image files dropped directly into OneDrive/Google Drive assets/
     const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif']);
     const filesOnDisk = await fs.readdir(assetsFolder, { withFileTypes: true });
     const knownFilenames = new Set(assets.map((a) => a.filename));
@@ -546,19 +707,14 @@ export class WorkspaceStore {
       }
     }
 
-    // Drop manifest records whose files no longer exist
-    const diskSet = new Set(filesOnDisk.filter((f) => f.isFile()).map((f) => f.name));
-    const filtered = assets.filter((a) => diskSet.has(a.filename));
-    if (filtered.length !== assets.length) {
-      assets = filtered;
-      dirty = true;
-    }
-
     if (dirty) {
-      await atomicWriteFile(manifestPath, yaml.dump({ assets } satisfies ArtManifestFile));
+      await this.writeArtManifest(worldSlug, assets);
     }
 
-    return assets.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const diskSet = new Set(filesOnDisk.filter((f) => f.isFile()).map((f) => f.name));
+    return assets
+      .map((a) => (diskSet.has(a.filename) ? a : { ...a, missing: true }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async saveArtAssetFromPath(
@@ -576,35 +732,48 @@ export class WorkspaceStore {
     buffer: Buffer,
     category: ArtCategory = 'other'
   ): Promise<ArtAsset> {
-    const assetsFolder = this.assetsDir(worldSlug);
-    await fs.mkdir(assetsFolder, { recursive: true });
+    return this.locks.run(`art:${worldSlug}`, async () => {
+      const assetsFolder = this.assetsDir(worldSlug);
+      await fs.mkdir(assetsFolder, { recursive: true });
 
-    const ext = path.extname(originalFilename).toLowerCase() || '.png';
-    const baseName = slugify(path.basename(originalFilename, ext));
-    let filename = `${baseName}${ext}`;
-    let suffix = 2;
-    while (await exists(path.join(assetsFolder, filename))) {
-      filename = `${baseName}-${suffix++}${ext}`;
-    }
+      const ext = path.extname(originalFilename).toLowerCase() || '.png';
+      const baseName = slugify(path.basename(originalFilename, ext));
+      let filename = `${baseName}${ext}`;
+      let suffix = 2;
+      while (await exists(path.join(assetsFolder, filename))) {
+        filename = `${baseName}-${suffix++}${ext}`;
+      }
 
-    await atomicWriteFile(path.join(assetsFolder, filename), buffer);
+      // Register in the manifest before the file exists on disk, so a concurrent reconcile
+      // can't create a duplicate record for it.
+      const existing = await this.readArtManifest(worldSlug);
+      const asset: ArtAsset = {
+        id: crypto.randomUUID(),
+        worldSlug,
+        filename,
+        relativePath: `assets/${filename}`,
+        title: path.basename(originalFilename, ext).replace(/[-_]+/g, ' '),
+        category,
+        tags: [],
+        caption: '',
+        createdAt: new Date().toISOString(),
+      };
+      await atomicWriteFile(path.join(assetsFolder, filename), buffer);
+      await this.writeArtManifest(worldSlug, [asset, ...existing.filter((a) => a.filename !== filename)]);
+      return asset;
+    });
+  }
 
-    const existing = await this.listArtAssets(worldSlug);
-    const asset: ArtAsset = {
-      id: crypto.randomUUID(),
-      worldSlug,
-      filename,
-      relativePath: `assets/${filename}`,
-      title: path.basename(originalFilename, ext).replace(/[-_]+/g, ' '),
-      category,
-      tags: [],
-      caption: '',
-      createdAt: new Date().toISOString(),
-    };
-
-    const next = [asset, ...existing.filter((a) => a.filename !== filename)];
-    await atomicWriteFile(this.artManifestPath(worldSlug), yaml.dump({ assets: next } satisfies ArtManifestFile));
-    return asset;
+  /** Replaces an existing asset's image bytes in place, keeping its ID, caption, tags and links. */
+  async replaceArtAssetFile(worldSlug: string, assetId: string, sourcePath: string): Promise<ArtAsset | null> {
+    return this.locks.run(`art:${worldSlug}`, async () => {
+      const assets = await this.readArtManifest(worldSlug);
+      const target = assets.find((a) => a.id === assetId);
+      if (!target) return null;
+      const buffer = await fs.readFile(sourcePath);
+      await atomicWriteFile(path.join(this.assetsDir(worldSlug), target.filename), buffer);
+      return target;
+    });
   }
 
   async updateArtAsset(
@@ -612,28 +781,86 @@ export class WorkspaceStore {
     assetId: string,
     patch: Partial<Pick<ArtAsset, 'title' | 'category' | 'tags' | 'caption'>>
   ): Promise<ArtAsset> {
-    const assets = await this.listArtAssets(worldSlug);
-    const idx = assets.findIndex((a) => a.id === assetId);
-    if (idx === -1) throw new Error(`Art asset not found: ${assetId}`);
-    const updated: ArtAsset = { ...assets[idx], ...patch };
-    assets[idx] = updated;
-    await atomicWriteFile(this.artManifestPath(worldSlug), yaml.dump({ assets } satisfies ArtManifestFile));
-    return updated;
+    return this.locks.run(`art:${worldSlug}`, async () => {
+      const assets = await this.readArtManifest(worldSlug);
+      const idx = assets.findIndex((a) => a.id === assetId);
+      if (idx === -1) throw new Error(`Art asset not found: ${assetId}`);
+      const updated: ArtAsset = { ...assets[idx], ...patch };
+      assets[idx] = updated;
+      await this.writeArtManifest(worldSlug, assets);
+      return updated;
+    });
   }
 
+  /** Moves the image and its metadata record to `<world>/.trash/assets/` (restorable). */
   async deleteArtAsset(worldSlug: string, assetId: string): Promise<void> {
-    const assets = await this.listArtAssets(worldSlug);
-    const target = assets.find((a) => a.id === assetId);
-    if (!target) return;
-    const fullPath = path.join(this.assetsDir(worldSlug), target.filename);
-    if (await exists(fullPath)) {
-      await fs.unlink(fullPath);
-    }
-    const remaining = assets.filter((a) => a.id !== assetId);
-    await atomicWriteFile(
-      this.artManifestPath(worldSlug),
-      yaml.dump({ assets: remaining } satisfies ArtManifestFile)
-    );
+    await this.locks.run(`art:${worldSlug}`, async () => {
+      const assets = await this.readArtManifest(worldSlug);
+      const target = assets.find((a) => a.id === assetId);
+      if (!target) return;
+      const trashDir = this.worldTrashDir(worldSlug, 'assets');
+      const fullPath = path.join(this.assetsDir(worldSlug), target.filename);
+      if (await exists(fullPath)) {
+        const dest = await moveToTrash(fullPath, trashDir, target.filename);
+        await atomicWriteFile(`${dest}.meta.yaml`, yaml.dump(target));
+      }
+      await this.writeArtManifest(
+        worldSlug,
+        assets.filter((a) => a.id !== assetId)
+      );
+    });
+  }
+
+  async createMap(worldSlug: string, title: string, assetId: string): Promise<WorldMapDef> {
+    return this.locks.run(`maps:${worldSlug}`, () => this.createMapUnlocked(worldSlug, title, assetId));
+  }
+
+  async updateMap(
+    worldSlug: string,
+    mapId: string,
+    patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
+  ): Promise<WorldMapDef> {
+    return this.locks.run(`maps:${worldSlug}`, () => this.updateMapUnlocked(worldSlug, mapId, patch));
+  }
+
+  /** Removes the map from maps.yaml, keeping a restorable copy in `<world>/.trash/maps/`. */
+  async deleteMap(worldSlug: string, mapId: string): Promise<void> {
+    await this.locks.run(`maps:${worldSlug}`, async () => {
+      const target = (await this.listMaps(worldSlug)).find((m) => m.id === mapId);
+      if (target) {
+        await atomicWriteFile(
+          path.join(this.worldTrashDir(worldSlug, 'maps'), `${trashStamp()}__${mapId}.yaml`),
+          yaml.dump(target)
+        );
+      }
+      await this.deleteMapUnlocked(worldSlug, mapId);
+    });
+  }
+
+  async createBoard(worldSlug: string, title: string): Promise<MoodboardDef> {
+    return this.locks.run(`boards:${worldSlug}`, () => this.createBoardUnlocked(worldSlug, title));
+  }
+
+  async updateBoard(
+    worldSlug: string,
+    boardId: string,
+    patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
+  ): Promise<MoodboardDef> {
+    return this.locks.run(`boards:${worldSlug}`, () => this.updateBoardUnlocked(worldSlug, boardId, patch));
+  }
+
+  /** Removes the board from boards.yaml, keeping a restorable copy in `<world>/.trash/boards/`. */
+  async deleteBoard(worldSlug: string, boardId: string): Promise<void> {
+    await this.locks.run(`boards:${worldSlug}`, async () => {
+      const target = (await this.listBoards(worldSlug)).find((b) => b.id === boardId);
+      if (target) {
+        await atomicWriteFile(
+          path.join(this.worldTrashDir(worldSlug, 'boards'), `${trashStamp()}__${boardId}.yaml`),
+          yaml.dump(target)
+        );
+      }
+      await this.deleteBoardUnlocked(worldSlug, boardId);
+    });
   }
 
   resolveAssetAbsolutePath(worldSlug: string, relativePath: string): string {
@@ -661,7 +888,7 @@ export class WorkspaceStore {
     return [];
   }
 
-  async createMap(worldSlug: string, title: string, assetId: string): Promise<WorldMapDef> {
+  private async createMapUnlocked(worldSlug: string, title: string, assetId: string): Promise<WorldMapDef> {
     const maps = await this.listMaps(worldSlug);
     const now = new Date().toISOString();
     const created: WorldMapDef = {
@@ -678,7 +905,7 @@ export class WorkspaceStore {
     return created;
   }
 
-  async updateMap(
+  private async updateMapUnlocked(
     worldSlug: string,
     mapId: string,
     patch: Partial<Pick<WorldMapDef, 'title' | 'assetId' | 'pins'>>
@@ -696,7 +923,7 @@ export class WorkspaceStore {
     return updated;
   }
 
-  async deleteMap(worldSlug: string, mapId: string): Promise<void> {
+  private async deleteMapUnlocked(worldSlug: string, mapId: string): Promise<void> {
     const maps = await this.listMaps(worldSlug);
     const remaining = maps.filter((m) => m.id !== mapId);
     await atomicWriteFile(
@@ -720,7 +947,7 @@ export class WorkspaceStore {
     return [];
   }
 
-  async createBoard(worldSlug: string, title: string): Promise<MoodboardDef> {
+  private async createBoardUnlocked(worldSlug: string, title: string): Promise<MoodboardDef> {
     const boards = await this.listBoards(worldSlug);
     const now = new Date().toISOString();
     const created: MoodboardDef = {
@@ -739,7 +966,7 @@ export class WorkspaceStore {
     return created;
   }
 
-  async updateBoard(
+  private async updateBoardUnlocked(
     worldSlug: string,
     boardId: string,
     patch: Partial<Pick<MoodboardDef, 'title' | 'items'>>
@@ -760,7 +987,7 @@ export class WorkspaceStore {
     return updated;
   }
 
-  async deleteBoard(worldSlug: string, boardId: string): Promise<void> {
+  private async deleteBoardUnlocked(worldSlug: string, boardId: string): Promise<void> {
     const boards = await this.listBoards(worldSlug);
     const remaining = boards.filter((b) => b.id !== boardId);
     await atomicWriteFile(
