@@ -703,6 +703,23 @@ function registerIpcHandlers(): void {
     return entry;
   });
 
+  ipcMain.handle('trash:list', async (_e, worldSlug: string) => requireStore().listTrash(worldSlug));
+
+  ipcMain.handle('trash:restore', async (_e, worldSlug: string, itemId: string) => {
+    const s = requireStore();
+    const result = await s.restoreTrashItem(worldSlug, itemId);
+    if (result.kind === 'entry' && result.relativePath) {
+      // The watcher ignores Loreloom's own writes, so index the restored entry here
+      const entry = await s.readEntryAtRelativePath(worldSlug, result.relativePath);
+      if (entry) requireIndex().upsertEntry(entry);
+    }
+    return result;
+  });
+
+  ipcMain.handle('trash:delete-forever', async (_e, worldSlug: string, itemId: string) =>
+    requireStore().deleteTrashItemForever(worldSlug, itemId)
+  );
+
   ipcMain.handle('entry:backlinks', async (_e, worldSlug: string, entryId: string) => {
     return requireIndex().getBacklinks(worldSlug, entryId);
   });

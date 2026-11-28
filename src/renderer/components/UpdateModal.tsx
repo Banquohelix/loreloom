@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   Download,
@@ -52,12 +52,16 @@ export function UpdateModal({
     }
   };
 
+  // Check once when the modal opens, unless the sidebar already has a fresh result
+  const openedWithResultRef = useRef(initialResult !== null);
+  const runCheckRef = useRef(runCheck);
+  runCheckRef.current = runCheck;
   useEffect(() => {
     bridge.hasUpdateToken().then(setHasToken).catch(() => {});
-    if (!initialResult) {
-      runCheck();
+    if (!openedWithResultRef.current) {
+      runCheckRef.current();
     }
-  }, []);
+  }, [bridge]);
 
   const handleSaveToken = async () => {
     await bridge.setUpdateToken(tokenInput.trim() || null);

@@ -28,8 +28,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint (TypeScript + React hooks rules)
+        run: pnpm run lint
+
       - name: Run unit & integration tests
         run: pnpm test
 
       - name: Build TypeScript, Vite, and Electron main
         run: pnpm run build
+
+      # Catches packaging breakage (missing files, native modules, builder config) before a release tag
+      - name: Package check (unpacked, not published)
+        run: pnpm run package:check

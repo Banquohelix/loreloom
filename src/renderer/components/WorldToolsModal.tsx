@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
   CopyCheck,
@@ -29,7 +29,7 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [idConflicts, setIdConflicts] = useState<DuplicateIdConflict[]>([]);
 
-  const scan = async () => {
+  const scan = useCallback(async () => {
     setLoading(true);
     try {
       const [dups, art, conflicts] = await Promise.all([
@@ -48,11 +48,11 @@ export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsMo
     } finally {
       setLoading(false);
     }
-  };
+  }, [bridge, world.slug]);
 
   useEffect(() => {
-    scan();
-  }, [world.slug]);
+    scan().catch(() => {});
+  }, [scan]);
 
   const handleReassignId = async (relativePath: string) => {
     setBusyKey(`id::${relativePath}`);

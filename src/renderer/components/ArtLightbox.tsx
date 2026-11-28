@@ -214,7 +214,7 @@ export function ArtLightbox({
                       .join(', ')}${linkedEntries.length > 3 ? '…' : ''}). Those covers, portraits and inline images will break.`
                   : '';
               const ok = window.confirm(
-                `Delete "${asset.title}"?${linkedNote}\n\nThe file is moved to this World's .trash/assets folder, so it can be restored.`
+                `Delete "${asset.title}"?${linkedNote}\n\nIt moves to this World's Trash, where you can restore it.`
               );
               if (!ok) return;
               await onDelete(asset.id);

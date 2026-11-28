@@ -316,6 +316,31 @@ export interface ArtQuery {
   tag?: string;
 }
 
+export type TrashKind = 'entry' | 'art' | 'map' | 'board' | 'type';
+
+/** Something deleted from a World and kept in `<world>/.trash/` so it can be restored. */
+export interface TrashItem {
+  /** `<kind>/<file name in the trash folder>` */
+  id: string;
+  kind: TrashKind;
+  title: string;
+  /** ISO time it was deleted */
+  deletedAt: string;
+  /** Where it lived before, e.g. `characters/kael.md` or `gate.png` */
+  originalName: string;
+}
+
+export interface TrashRestoreResult {
+  kind: TrashKind;
+  title: string;
+  /** The restored entry, asset, map, board or type ID */
+  restoredId: string;
+  /** For entries: the restored file's path relative to `entries/` */
+  relativePath?: string;
+  /** True when the original name or ID was taken, so it came back under a new one */
+  renamed: boolean;
+}
+
 export interface WorkspaceExternalChangeEvent {
   worldSlug?: string;
   kind: 'entry' | 'world' | 'art';
@@ -443,6 +468,9 @@ export interface DesktopBridge {
     removeEntryIds: string[]
   ) => Promise<Entry>;
   findDuplicateIds: (worldSlug: string) => Promise<DuplicateIdConflict[]>;
+  listTrash: (worldSlug: string) => Promise<TrashItem[]>;
+  restoreTrashItem: (worldSlug: string, itemId: string) => Promise<TrashRestoreResult>;
+  deleteTrashItemForever: (worldSlug: string, itemId: string) => Promise<void>;
   reassignEntryId: (worldSlug: string, relativePath: string) => Promise<Entry>;
   findArtLinkSuggestions: (worldSlug: string) => Promise<ArtLinkSuggestion[]>;
 
