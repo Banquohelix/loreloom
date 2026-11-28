@@ -56,6 +56,7 @@ const bridge: DesktopBridge = {
   deleteBoard: (worldSlug, boardId) => ipcRenderer.invoke('board:delete', worldSlug, boardId),
 
   exportWorldBible: (options) => ipcRenderer.invoke('bible:export', options),
+  exportWorldZip: (worldSlug) => ipcRenderer.invoke('world:export-zip', worldSlug),
   openLocalFile: (filePath) => ipcRenderer.invoke('shell:open-local-file', filePath),
 
   findDuplicates: (worldSlug) => ipcRenderer.invoke('hygiene:duplicates', worldSlug),

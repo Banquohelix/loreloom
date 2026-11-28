@@ -39,7 +39,7 @@ import { IntakeSyncModal } from './components/IntakeSyncModal';
 import { WorldToolsModal } from './components/WorldToolsModal';
 import { ExportBibleModal } from './components/ExportBibleModal';
 import { UpdateModal } from './components/UpdateModal';
-import { QuickSwitcherModal } from './components/QuickSwitcherModal';
+import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
 
 export default function App() {
@@ -433,6 +433,42 @@ export default function App() {
     if (folder) await loadWorkspace(folder);
   };
 
+  const handleExportWorldZip = async () => {
+    if (!activeWorld) return;
+    const res = await bridge.exportWorldZip(activeWorld.slug);
+    if (res) {
+      setToastMessage(`Backed up ${activeWorld.name} to ${res.outputPath.split(/[\\/]/).pop()}`);
+      window.setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
+  const paletteCommands: PaletteCommand[] = useMemo(() => {
+    const list: PaletteCommand[] = [];
+    if (activeWorld) {
+      list.push(
+        { id: 'new-entry', label: 'Create New Lore Page', category: 'Create', run: () => handleCreateEntry('page') },
+        { id: 'toggle-split', label: splitView ? 'Close Split-Pane View' : 'Open Side-by-Side Split View', category: 'Layout', run: handleToggleSplit },
+        { id: 'go-overview', label: 'Go to World Overview', category: 'Navigate', run: () => setActiveView({ kind: 'overview' }) },
+        { id: 'go-art', label: 'Go to Concept Art Gallery', category: 'Navigate', run: () => setActiveView({ kind: 'art' }) },
+        { id: 'go-graph', label: 'Go to Interactive Lore Graph', category: 'Navigate', run: () => setActiveView({ kind: 'graph' }) },
+        { id: 'go-maps', label: 'Go to Interactive Pin Maps', category: 'Navigate', run: () => setActiveView({ kind: 'maps' }) },
+        { id: 'go-moodboards', label: 'Go to Visual Moodboards', category: 'Navigate', run: () => setActiveView({ kind: 'moodboards' }) },
+        { id: 'intake', label: 'Open Intake Folder Sync & AI Framework', category: 'Tools', run: () => setIntakeModalOpen(true) },
+        { id: 'hygiene', label: 'Open World Cleanup & Art Auto-Linker', category: 'Tools', run: () => setWorldToolsModalOpen(true) },
+        { id: 'export-bible', label: 'Export Illustrated World Bible (PDF / HTML)', category: 'Export', run: () => setExportBibleModalOpen(true) },
+        { id: 'backup-zip', label: `Backup "${activeWorld.name}" as .zip Snapshot`, category: 'Export', run: handleExportWorldZip },
+        { id: 'theme', label: 'Customize World Theme & Style', category: 'Appearance', run: () => setThemeDrawerOpen(true) }
+      );
+    }
+    list.push(
+      { id: 'new-world', label: 'Create New World / Project', category: 'Workspace', run: () => setCreateWorldModalOpen(true) },
+      { id: 'import-obsidian', label: 'Import Obsidian Story Vault', category: 'Workspace', run: () => setImportModalOpen(true) },
+      { id: 'toggle-appearance', label: `Switch to ${appearance === 'dark' ? 'Light' : 'Dark'} Mode`, category: 'Appearance', run: handleToggleAppearance },
+      { id: 'check-updates', label: 'Check for Loreloom Updates', category: 'App', run: () => setUpdateModalOpen(true) }
+    );
+    return list;
+  }, [activeWorld, splitView, appearance]);
+
   if (booting) {
     return (
       <div className="h-screen flex items-center justify-center text-sm text-[var(--studio-muted)]">
@@ -784,11 +820,12 @@ export default function App() {
 
       {quickSwitcherOpen && (
         <QuickSwitcherModal
+          commands={paletteCommands}
           onSelectHit={async (worldSlug, entryId) => {
             if (worldSlug !== activeWorldSlug) {
               setActiveWorldSlug(worldSlug);
             }
-            setActiveView({ kind: 'entry', entryId });
+            setActiveView({ kind: 'entry', entryId }, true);
           }}
           onClose={() => setQuickSwitcherOpen(false)}
         />

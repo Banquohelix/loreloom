@@ -403,8 +403,9 @@ export interface DesktopBridge {
   ) => Promise<MoodboardDef>;
   deleteBoard: (worldSlug: string, boardId: string) => Promise<void>;
 
-  // World Bible Export (HTML / PDF)
+  // World Bible Export (HTML / PDF) & Snapshot Backup
   exportWorldBible: (options: ExportWorldBibleOptions) => Promise<ExportWorldBibleResult | null>;
+  exportWorldZip: (worldSlug: string) => Promise<{ outputPath: string } | null>;
   openLocalFile: (filePath: string) => Promise<void>;
 
   // World Hygiene (Duplicate Merger & Art Auto-Linker)

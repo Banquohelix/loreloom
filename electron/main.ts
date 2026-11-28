@@ -1,8 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } from 'electron';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 import chokidar, { type FSWatcher } from 'chokidar';
 import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
@@ -440,6 +444,34 @@ function registerIpcHandlers(): void {
     await shell.openPath(filePath);
   });
 
+  ipcMain.handle('world:export-zip', async (_e, worldSlug: string) => {
+    const s = requireStore();
+    const world = (await s.listWorlds()).find((w) => w.slug === worldSlug);
+    if (!world) throw new Error(`World not found: ${worldSlug}`);
+
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const saveRes = await dialog.showSaveDialog({
+      title: `Backup ${world.name} as ZIP`,
+      defaultPath: `${world.slug}-backup-${dateStamp}.zip`,
+      filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+    });
+    if (saveRes.canceled || !saveRes.filePath) return null;
+
+    const worldDir = s.worldDir(world.slug);
+    const destZip = saveRes.filePath;
+    if (process.platform === 'win32') {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Compress-Archive -Path "${worldDir}\\*" -DestinationPath "${destZip}" -Force`,
+      ]);
+    } else {
+      await execFileAsync('zip', ['-r', destZip, '.'], { cwd: worldDir });
+    }
+    return { outputPath: destZip };
+  });
+
   ipcMain.handle('hygiene:duplicates', async (_e, worldSlug: string) => {
     const entries = await requireStore().listAllEntriesInWorld(worldSlug);
     return findDuplicateGroups(entries);
@@ -592,12 +624,14 @@ function registerIpcHandlers(): void {
 }
 
 function createWindow(): void {
+  const iconPath = path.join(__dirname, '../../build/icon.png');
   mainWindow = new BrowserWindow({
     width: 1420,
     height: 900,
     minWidth: 1024,
     minHeight: 680,
     title: 'Loreloom',
+    icon: iconPath,
     backgroundColor: '#18181b',
     show: true,
     webPreferences: {
