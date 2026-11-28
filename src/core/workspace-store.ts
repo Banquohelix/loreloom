@@ -40,10 +40,12 @@ export { fileWriteObserver };
  */
 export const WORLD_FORMAT_VERSION = 2;
 
-export type RecordKind = 'art' | 'maps' | 'boards' | 'types';
+export type RecordKind = 'art' | 'maps' | 'boards' | 'types' | 'favorites';
+/** Record kinds that older Loreloom versions kept in one shared manifest file. */
+type LegacyKind = Exclude<RecordKind, 'types' | 'favorites'>;
 
 /** Shared manifests used by Loreloom <= 0.6.8, absorbed into per-record files on sight. */
-const LEGACY_MANIFESTS: Record<Exclude<RecordKind, 'types'>, string> = {
+const LEGACY_MANIFESTS: Record<LegacyKind, string> = {
   art: 'art-manifest.yaml',
   maps: 'maps.yaml',
   boards: 'boards.yaml',
@@ -51,6 +53,13 @@ const LEGACY_MANIFESTS: Record<Exclude<RecordKind, 'types'>, string> = {
 export const LEGACY_MANIFEST_FILES = new Set(Object.values(LEGACY_MANIFESTS));
 
 type TypeRecord = EntityTypeDef & { order?: number };
+
+/** `records/favorites/<entryId>.yaml`: the record id is the favorited entry's id. */
+interface FavoriteRecord {
+  id: string;
+  addedAt: string;
+  updatedAt: string;
+}
 
 export interface RecordMigrationReport {
   art: number;
@@ -196,7 +205,7 @@ export class WorkspaceStore {
     return path.join(this.worldDir(worldSlug), 'assets');
   }
 
-  private legacyManifestPath(worldSlug: string, kind: Exclude<RecordKind, 'types'>): string {
+  private legacyManifestPath(worldSlug: string, kind: LegacyKind): string {
     return path.join(this.worldDir(worldSlug), LEGACY_MANIFESTS[kind]);
   }
 
@@ -219,6 +228,10 @@ export class WorkspaceStore {
 
   private typeRecords(worldSlug: string): RecordFolder<TypeRecord> {
     return new RecordFolder<TypeRecord>(this.recordsDir(worldSlug, 'types'));
+  }
+
+  private favoriteRecords(worldSlug: string): RecordFolder<FavoriteRecord> {
+    return new RecordFolder<FavoriteRecord>(this.recordsDir(worldSlug, 'favorites'));
   }
 
   private async readWorldYaml(worldSlug: string): Promise<Record<string, unknown> | null> {
@@ -281,7 +294,7 @@ export class WorkspaceStore {
       const raw = await this.readWorldYaml(worldSlug);
       if (!raw) return report;
       if (Number(raw.formatVersion ?? 1) > WORLD_FORMAT_VERSION) return report;
-      const retire = async (kind: Exclude<RecordKind, 'types'>) => {
+      const retire = async (kind: LegacyKind) => {
         await moveToTrash(
           this.legacyManifestPath(worldSlug, kind),
           this.worldTrashDir(worldSlug, 'migrated'),
@@ -289,7 +302,7 @@ export class WorkspaceStore {
         );
         report.legacyFilesRetired.push(LEGACY_MANIFESTS[kind]);
       };
-      const readLegacy = async (kind: Exclude<RecordKind, 'types'>, key: string): Promise<unknown[] | null> => {
+      const readLegacy = async (kind: LegacyKind, key: string): Promise<unknown[] | null> => {
         const file = this.legacyManifestPath(worldSlug, kind);
         if (!(await exists(file))) return null;
         try {
@@ -368,7 +381,7 @@ export class WorkspaceStore {
     });
   }
 
-  private async absorbLegacy(worldSlug: string, kind: Exclude<RecordKind, 'types'>): Promise<void> {
+  private async absorbLegacy(worldSlug: string, kind: LegacyKind): Promise<void> {
     if (await exists(this.legacyManifestPath(worldSlug, kind))) {
       await this.migrateWorldRecords(worldSlug).catch(() => undefined);
     }
@@ -1188,6 +1201,35 @@ export class WorkspaceStore {
 
   private async deleteBoardUnlocked(worldSlug: string, boardId: string): Promise<void> {
     await this.boardRecords(worldSlug).remove(boardId);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Favorites: one record per favorited entry (`records/favorites/<entryId>.yaml`), so starring
+  // pages on two PCs never makes a sync conflict. Favorites of deleted entries are kept, so
+  // restoring the entry from the Trash brings its star back; the sidebar just hides them.
+
+  /** Favorited entry ids, in the order they were added. */
+  async listFavorites(worldSlug: string): Promise<string[]> {
+    const records = await this.favoriteRecords(worldSlug).list();
+    return records
+      .sort((a, b) => String(a.addedAt).localeCompare(String(b.addedAt)) || a.id.localeCompare(b.id))
+      .map((r) => r.id);
+  }
+
+  /** Stars or unstars an entry. Returns the updated favorites list. */
+  async setFavorite(worldSlug: string, entryId: string, favorite: boolean): Promise<string[]> {
+    await this.locks.run(`favorites:${worldSlug}`, async () => {
+      await this.assertWritable(worldSlug);
+      const records = this.favoriteRecords(worldSlug);
+      if (!favorite) {
+        await records.remove(entryId);
+        return;
+      }
+      if (await records.get(entryId)) return;
+      const now = new Date().toISOString();
+      await records.put({ id: entryId, addedAt: now, updatedAt: now });
+    });
+    return this.listFavorites(worldSlug);
   }
 
   // ---------------------------------------------------------------------------------------------

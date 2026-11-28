@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Command, FileText, Search, X } from 'lucide-react';
+import { Clock, Command, FileText, Search, X } from 'lucide-react';
 import type { SearchHit } from '@shared/types';
 import { getBridge } from '../lib/bridge';
 import { useModalA11y } from '../lib/use-modal-a11y';
@@ -13,12 +13,15 @@ export interface PaletteCommand {
 
 interface QuickSwitcherModalProps {
   commands: PaletteCommand[];
+  /** Recently opened pages, shown before you type */
+  recentHits?: SearchHit[];
   onSelectHit: (worldSlug: string, entryId: string) => void;
   onClose: () => void;
 }
 
 export function QuickSwitcherModal({
   commands,
+  recentHits = [],
   onSelectHit,
   onClose,
 }: QuickSwitcherModalProps) {
@@ -54,14 +57,15 @@ export function QuickSwitcherModal({
 
   type PaletteRow =
     | { kind: 'command'; cmd: PaletteCommand }
-    | { kind: 'hit'; hit: SearchHit };
+    | { kind: 'hit'; hit: SearchHit; recent?: boolean };
 
   const rows: PaletteRow[] = useMemo(() => {
     const list: PaletteRow[] = [];
-    for (const hit of hits) list.push({ kind: 'hit', hit });
+    if (!query.trim()) for (const hit of recentHits) list.push({ kind: 'hit', hit, recent: true });
+    else for (const hit of hits) list.push({ kind: 'hit', hit });
     for (const cmd of matchingCommands) list.push({ kind: 'command', cmd });
     return list;
-  }, [hits, matchingCommands]);
+  }, [hits, recentHits, query, matchingCommands]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -140,12 +144,16 @@ export function QuickSwitcherModal({
                       selected ? 'bg-black/8 dark:bg-white/10' : 'hover:bg-black/5 dark:hover:bg-white/5'
                     }`}
                   >
-                    <FileText className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                    {row.recent ? (
+                      <Clock className="w-4 h-4 text-[var(--studio-muted)] mt-0.5 shrink-0" />
+                    ) : (
+                      <FileText className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium truncate">{row.hit.title}</span>
                         <span className="text-[10px] text-[var(--studio-muted)] shrink-0">
-                          {row.hit.worldName} · {row.hit.type}
+                          {row.recent ? `Recent · ${row.hit.type}` : `${row.hit.worldName} · ${row.hit.type}`}
                         </span>
                       </div>
                       {row.hit.snippet && (

@@ -507,6 +507,10 @@ export interface DesktopBridge {
   ) => Promise<MoodboardDef>;
   deleteBoard: (worldSlug: string, boardId: string) => Promise<void>;
 
+  // Favorites (stored in the World folder, so they sync across PCs)
+  listFavorites: (worldSlug: string) => Promise<string[]>;
+  setFavorite: (worldSlug: string, entryId: string, favorite: boolean) => Promise<string[]>;
+
   // World Bible Export (HTML / PDF) & Snapshot Backup
   exportWorldBible: (options: ExportWorldBibleOptions) => Promise<ExportWorldBibleResult | null>;
   exportWorldZip: (worldSlug: string) => Promise<{ outputPath: string } | null>;

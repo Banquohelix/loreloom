@@ -130,6 +130,7 @@ function createBrowserPreviewBridge(): DesktopBridge {
   let artAssets: ArtAsset[] = [];
   let maps: import('@shared/types').WorldMapDef[] = [];
   let boards: import('@shared/types').MoodboardDef[] = [];
+  const favorites = new Map<string, string[]>();
 
   const toSummary = (e: Entry): EntrySummary => ({
     id: e.id,
@@ -357,6 +358,13 @@ function createBrowserPreviewBridge(): DesktopBridge {
     },
     deleteMap: async (_worldSlug, mapId) => {
       maps = maps.filter((m) => m.id !== mapId);
+    },
+    listFavorites: async (worldSlug) => favorites.get(worldSlug) ?? [],
+    setFavorite: async (worldSlug, entryId, favorite) => {
+      const current = (favorites.get(worldSlug) ?? []).filter((id) => id !== entryId);
+      const next = favorite ? [...current, entryId] : current;
+      favorites.set(worldSlug, next);
+      return next;
     },
     listBoards: async (worldSlug) => boards.filter((b) => b.worldSlug === worldSlug),
     createBoard: async (worldSlug, title) => {

@@ -34,6 +34,7 @@ import {
   ListOrdered,
   Minus,
   PanelRight,
+  Star,
   Quote,
   Sparkles,
   Table as TableIcon,
@@ -117,6 +118,8 @@ interface EntryEditorProps {
   onSaveEntry: (patch: EntrySavePatch) => Promise<UpdateEntryResult | null>;
   onNavigateEntry: (entryId: string) => void;
   onCreateStubEntry: (title: string) => Promise<void>;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
 }
 
 /**
@@ -133,6 +136,8 @@ export function EntryEditor({
   onSaveEntry,
   onNavigateEntry,
   onCreateStubEntry,
+  isFavorite = false,
+  onToggleFavorite,
 }: EntryEditorProps) {
   const bridge = getBridge();
   const [title, setTitle] = useState(entry.title);
@@ -497,6 +502,19 @@ export function EntryEditor({
               </>
             )}
           </span>
+          {onToggleFavorite && (
+            <button
+              onClick={onToggleFavorite}
+              title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+              aria-label={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+              aria-pressed={isFavorite}
+              className={`p-1.5 rounded-md transition cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 ${
+                isFavorite ? 'text-amber-500' : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+              }`}
+            >
+              <Star className="w-4 h-4" fill={isFavorite ? 'currentColor' : 'none'} />
+            </button>
+          )}
           <button
             onClick={() => setPickerMode('inline')}
             className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
