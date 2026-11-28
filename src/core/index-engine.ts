@@ -34,6 +34,57 @@ export function extractWikilinks(markdown: string): WikilinkExtraction[] {
   return results;
 }
 
+/** `member_of` / `homeFaction` → "Member of" / "Home faction" (graph edge labels for relation properties). */
+export function humanizePropertyKey(key: string): string {
+  const spaced = key
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+export interface PropertyLink {
+  key: string;
+  target: string;
+}
+
+/**
+ * `[[wikilinks]]` inside frontmatter properties: Relation fields, and link properties written in
+ * Obsidian. They count as links for backlinks, the graph and rename-aware link updates.
+ */
+export function extractPropertyLinks(properties: Record<string, unknown>): PropertyLink[] {
+  const out: PropertyLink[] = [];
+  for (const [key, value] of Object.entries(properties ?? {})) {
+    const strings = Array.isArray(value) ? value : [value];
+    for (const v of strings) {
+      if (typeof v !== 'string' || !v.includes('[[')) continue;
+      for (const link of extractWikilinks(v)) out.push({ key, target: link.target });
+    }
+  }
+  return out;
+}
+
+/** Rewrites `[[Old Title]]` links inside property values; returns null when nothing changed. */
+export function rewritePropertyLinks(
+  properties: Record<string, unknown>,
+  oldKeys: string[],
+  newTitle: string
+): Record<string, unknown> | null {
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(properties ?? {})) {
+    const rewrite = (v: unknown) => {
+      if (typeof v !== 'string' || !v.includes('[[')) return v;
+      const r = rewriteWikilinks(v, oldKeys, newTitle);
+      if (r !== v) changed = true;
+      return r;
+    };
+    next[key] = Array.isArray(value) ? value.map(rewrite) : rewrite(value);
+  }
+  return changed ? next : null;
+}
+
 /** Rewrites `[[Old Title]]`, `[[Old Title|label]]` and `[[Old Title#heading]]` to point at `newTitle`. */
 export function rewriteWikilinks(markdown: string, oldKeys: string[], newTitle: string): string {
   const lowered = new Set(oldKeys.map((k) => k.toLowerCase()));
@@ -304,6 +355,9 @@ export class IndexEngine {
     for (const link of extractWikilinks(entry.body)) {
       insertLink.run(entry.worldSlug, entry.id, link.target.toLowerCase(), link.context);
     }
+    for (const link of extractPropertyLinks(entry.properties)) {
+      insertLink.run(entry.worldSlug, entry.id, link.target.toLowerCase(), `${humanizePropertyKey(link.key)}: ${link.target}`);
+    }
   }
 
   removeEntry(worldSlug: string, entryId: string): void {
@@ -408,7 +462,7 @@ export class IndexEngine {
 
   getWorldGraph(worldSlug: string): WorldGraph {
     const entryRows = this.stmt(
-      'SELECT id, title, slug, type, relationships_json, aliases_json FROM entries WHERE world_slug = ?'
+      'SELECT id, title, slug, type, relationships_json, aliases_json, properties_json FROM entries WHERE world_slug = ?'
     ).all(worldSlug) as Array<{
       id: string;
       title: string;
@@ -416,6 +470,7 @@ export class IndexEngine {
       type: string;
       relationships_json: string;
       aliases_json: string;
+      properties_json: string;
     }>;
 
     const idSet = new Set(entryRows.map((r) => r.id));
@@ -450,7 +505,16 @@ export class IndexEngine {
       }
     }
 
-    // 2. Wikilink edges (unlabeled)
+    // 2. Relation properties (labeled with the property name, e.g. "Faction")
+    for (const row of entryRows) {
+      for (const link of extractPropertyLinks(safeJson<Record<string, unknown>>(row.properties_json, {}))) {
+        const targetId = idByKey.get(link.target.toLowerCase());
+        if (!targetId || targetId === row.id) continue;
+        addEdge(row.id, targetId, humanizePropertyKey(link.key));
+      }
+    }
+
+    // 3. Wikilink edges (unlabeled)
     const linkRows = this.stmt('SELECT source_id, target_key FROM links WHERE world_slug = ?').all(worldSlug) as Array<{
       source_id: string;
       target_key: string;

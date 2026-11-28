@@ -27,13 +27,23 @@ export interface WorldTheme {
   editorialDropCap: boolean;
 }
 
-export type PropertyFieldType = 'text' | 'select' | 'multi-select' | 'date' | 'number';
+export type PropertyFieldType =
+  | 'text'
+  | 'select'
+  | 'multi-select'
+  | 'date'
+  | 'number'
+  | 'checkbox'
+  | 'url'
+  | 'relation';
 
 export interface PropertyFieldDef {
   key: string;
   label: string;
   fieldType: PropertyFieldType;
   options?: string[];
+  /** Relation fields: the entity types it may link to (empty or missing = any type). */
+  targetTypes?: string[];
 }
 
 export interface EntityTypeDef {

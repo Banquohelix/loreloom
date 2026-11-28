@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { LEGACY_MANIFEST_FILES, WorkspaceStore, fileWriteObserver } from '../src/core/workspace-store';
-import { IndexEngine, extractWikilinks, rewriteWikilinks } from '../src/core/index-engine';
+import { IndexEngine, extractPropertyLinks, extractWikilinks, rewritePropertyLinks, rewriteWikilinks } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { KeyedMutex } from '../src/core/keyed-mutex';
@@ -677,14 +677,23 @@ function registerIpcHandlers(): void {
     const target = await s.readEntryById(worldSlug, entryId);
     if (!target || !oldTitle?.trim() || oldTitle.trim() === target.title) return { updatedEntries: 0 };
     const oldKey = oldTitle.trim().toLowerCase();
+    const linksTo = (targets: Array<{ target: string }>) => targets.some((l) => l.target.toLowerCase() === oldKey);
     const candidates = (await s.listAllEntriesInWorld(worldSlug)).filter(
-      (e) => e.id !== entryId && extractWikilinks(e.body).some((l) => l.target.toLowerCase() === oldKey)
+      (e) => e.id !== entryId && (linksTo(extractWikilinks(e.body)) || linksTo(extractPropertyLinks(e.properties)))
     );
     let updatedEntries = 0;
     for (const source of candidates) {
       const nextBody = rewriteWikilinks(source.body, [oldTitle.trim()], target.title);
-      if (nextBody === source.body) continue;
-      const updated = await s.updateEntry({ worldSlug, id: source.id, body: nextBody, baseBody: source.body });
+      // Relation properties ("[[Old Title]]" in frontmatter) are updated too
+      const nextProperties = rewritePropertyLinks(source.properties, [oldTitle.trim()], target.title);
+      if (nextBody === source.body && !nextProperties) continue;
+      const updated = await s.updateEntry({
+        worldSlug,
+        id: source.id,
+        body: nextBody,
+        baseBody: source.body,
+        ...(nextProperties ? { properties: nextProperties as UpdateEntryInput['properties'] } : {}),
+      });
       idx.upsertEntry(updated);
       if (!updated.conflictCopy) updatedEntries++;
     }

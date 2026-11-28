@@ -231,6 +231,41 @@ export function EntityTypeModal({ initial, existingTypes, usageCount = 0, onSave
                     className="w-full rounded-lg border border-[var(--studio-border)] bg-transparent px-2.5 py-1.5 text-xs outline-none"
                   />
                 )}
+                {f.fieldType === 'relation' && (
+                  <div role="group" aria-label={`Field ${idx + 1} links to`} className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-[var(--studio-muted)] mr-0.5">Links to:</span>
+                    {existingTypes
+                      .filter((t) => t.id !== initial?.id)
+                      .concat(initial ? [initial] : [])
+                      .map((t) => {
+                        const on = (f.targetTypes ?? []).includes(t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() =>
+                              updateField(idx, {
+                                targetTypes: on
+                                  ? (f.targetTypes ?? []).filter((x) => x !== t.id)
+                                  : [...(f.targetTypes ?? []), t.id],
+                              })
+                            }
+                            className={`px-2 py-0.5 rounded-full text-[10px] border cursor-pointer ${
+                              on
+                                ? 'border-transparent bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900'
+                                : 'border-[var(--studio-border)] text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                            }`}
+                          >
+                            {t.pluralName || t.name}
+                          </button>
+                        );
+                      })}
+                    {(f.targetTypes ?? []).length === 0 && (
+                      <span className="text-[10px] text-[var(--studio-muted)]">any type</span>
+                    )}
+                  </div>
+                )}
                 {editing && f.key && (
                   <div className="text-[10px] text-[var(--studio-muted)]">
                     Saved as <code>{f.key}</code>. Renaming the label keeps existing values.
