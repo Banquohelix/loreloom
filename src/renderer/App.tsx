@@ -48,6 +48,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
 import { NewEntryModal, type NewEntryChoice } from './components/NewEntryModal';
+import { parseRecents, pushRecent, recentsStorageKey } from '@shared/recents';
 import { TEMPLATE_TYPE_DEF, TEMPLATE_TYPE_ID, applyTemplate, templateFromEntry, templatesForType } from '@shared/templates';
 
 /** "Open Questions" → "open-questions" (used as the default folder for a type's new entries). */
@@ -116,6 +117,12 @@ export default function App() {
   /** Set when the active tab's entry no longer exists (deleted here, on another PC, or in a sync). */
   const [missingEntryId, setMissingEntryId] = useState<string | null>(null);
   const [artAssets, setArtAssets] = useState<ArtAsset[]>([]);
+  /** Favorited entry ids for the active World (synced through the World folder). */
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
+  /** Recently opened entry ids for the active World, newest first (this PC only). */
+  const [recentIds, setRecentIds] = useState<string[]>([]);
+  const favoriteIdsRef = useRef<string[]>([]);
+  favoriteIdsRef.current = favoriteIds;
   const [currentEntry, setCurrentEntry] = useState<Entry | null>(null);
   const [backlinks, setBacklinks] = useState<BacklinkRef[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -261,17 +268,22 @@ export default function App() {
 
   const refreshWorldData = useCallback(
     async (worldSlug: string) => {
-      const [list, art] = await Promise.all([
+      const [list, art, favorites] = await Promise.all([
         bridge.listEntries({ worldSlug, sortBy: 'updatedAt', sortDir: 'desc' }),
         bridge.listArtAssets({ worldSlug }),
+        // A favorites read failing (e.g. a file mid-sync) shouldn't stop the World loading
+        bridge.listFavorites(worldSlug).catch(() => null),
       ]);
+      if (activeWorldSlugRef.current && activeWorldSlugRef.current !== worldSlug) return;
       setEntries(list);
       setArtAssets(art);
+      if (favorites) setFavoriteIds(favorites);
     },
     [bridge]
   );
 
   useEffect(() => {
+    setFavoriteIds([]);
     if (!activeWorldSlug) {
       setEntries([]);
       setArtAssets([]);
@@ -279,6 +291,62 @@ export default function App() {
     }
     refreshWorldData(activeWorldSlug);
   }, [activeWorldSlug, refreshWorldData]);
+
+  // Recents are remembered per World on this PC
+  const activeWorldId = activeWorld?.id ?? null;
+  useEffect(() => {
+    setRecentIds(activeWorldId ? parseRecents(localStorage.getItem(recentsStorageKey(activeWorldId))) : []);
+  }, [activeWorldId]);
+
+  const rememberRecent = useCallback((worldId: string, entryId: string) => {
+    setRecentIds((prev) => {
+      const next = pushRecent(prev, entryId);
+      try {
+        localStorage.setItem(recentsStorageKey(worldId), JSON.stringify(next));
+      } catch {
+        // Storage full or unavailable: recents just won't persist this time
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleFavorite = useCallback(
+    async (entryId: string) => {
+      const worldSlug = activeWorldSlugRef.current;
+      if (!worldSlug) return;
+      // Decide from the latest list (a state updater may run later, after the request is sent)
+      const favorite = !favoriteIdsRef.current.includes(entryId);
+      const optimistic = favorite ? [...favoriteIdsRef.current, entryId] : favoriteIdsRef.current.filter((id) => id !== entryId);
+      favoriteIdsRef.current = optimistic;
+      setFavoriteIds(optimistic);
+      try {
+        const next = await bridge.setFavorite(worldSlug, entryId, favorite);
+        if (activeWorldSlugRef.current === worldSlug) setFavoriteIds(next);
+      } catch (err) {
+        showToast(`Could not ${favorite ? 'add to' : 'remove from'} Favorites: ${friendlyErrorMessage(err)}`);
+        const restored = await bridge.listFavorites(worldSlug).catch(() => null);
+        if (restored && activeWorldSlugRef.current === worldSlug) setFavoriteIds(restored);
+      }
+    },
+    [bridge, showToast]
+  );
+
+  const entriesById = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
+  // Favorites and recents of deleted entries stay stored (restoring from Trash brings them back) but are hidden
+  const favoriteEntries = useMemo(
+    () => favoriteIds.map((id) => entriesById.get(id)).filter((e): e is EntrySummary => Boolean(e)),
+    [favoriteIds, entriesById]
+  );
+  const recentEntries = useMemo(
+    () => recentIds.map((id) => entriesById.get(id)).filter((e): e is EntrySummary => Boolean(e)),
+    [recentIds, entriesById]
+  );
+
+  // Opening a page (in a tab, from search, a link, or Favorites) puts it at the top of Recent
+  const currentEntryId = currentEntry?.id ?? null;
+  useEffect(() => {
+    if (activeWorldId && currentEntryId) rememberRecent(activeWorldId, currentEntryId);
+  }, [activeWorldId, currentEntryId, rememberRecent]);
 
   // Load full entry + backlinks when viewing an entry
   useEffect(() => {
@@ -706,6 +774,18 @@ export default function App() {
               typeId: activeView.kind === 'collection' && activeView.typeId !== TEMPLATE_TYPE_ID ? activeView.typeId : 'page',
             }),
         },
+        ...(currentEntry
+          ? [
+              {
+                id: 'toggle-favorite',
+                label: favoriteIds.includes(currentEntry.id)
+                  ? `Remove "${currentEntry.title}" from Favorites`
+                  : `Add "${currentEntry.title}" to Favorites`,
+                category: 'Page',
+                run: () => toggleFavorite(currentEntry.id),
+              },
+            ]
+          : []),
         { id: 'toggle-split', label: splitView ? 'Close Split-Pane View' : 'Open Side-by-Side Split View', category: 'Layout', run: handleToggleSplit },
         { id: 'go-overview', label: 'Go to World Overview', category: 'Navigate', run: () => setActiveView({ kind: 'overview' }) },
         { id: 'go-art', label: 'Go to Concept Art Gallery', category: 'Navigate', run: () => setActiveView({ kind: 'art' }) },
@@ -765,6 +845,9 @@ export default function App() {
         onSelectWorld={handleSelectWorld}
         onOpenCreateWorld={() => setCreateWorldModalOpen(true)}
         onSelectView={setActiveView}
+        favoriteEntries={favoriteEntries}
+        recentEntries={recentEntries}
+        onToggleFavorite={toggleFavorite}
         onCreateEntry={handleCreateEntry}
         onOpenEntityTypeModal={() => setEntityTypeModal('new')}
         onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
@@ -901,6 +984,8 @@ export default function App() {
                     }
                     onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
                     onCreateStubEntry={handleCreateStubEntry}
+                    isFavorite={favoriteIds.includes(currentEntry.id)}
+                    onToggleFavorite={() => toggleFavorite(currentEntry.id)}
                   />
                   {inspectorOpen && !splitView && (
                     <EntryInspector
@@ -1065,6 +1150,8 @@ export default function App() {
                       }
                       onNavigateEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
                       onCreateStubEntry={handleCreateStubEntry}
+                      isFavorite={favoriteIds.includes(splitEntry.id)}
+                      onToggleFavorite={() => toggleFavorite(splitEntry.id)}
                     />
                   ) : null}
                 </div>
@@ -1115,6 +1202,17 @@ export default function App() {
       {quickSwitcherOpen && (
         <QuickSwitcherModal
           commands={buildPaletteCommands()}
+          recentHits={recentEntries
+            .filter((e) => e.id !== currentEntry?.id)
+            .slice(0, 8)
+            .map((e) => ({
+              entryId: e.id,
+              worldSlug: e.worldSlug,
+              worldName: activeWorld?.name ?? '',
+              title: e.title,
+              type: activeWorld?.entityTypes.find((t) => t.id === e.type)?.name ?? e.type,
+              snippet: '',
+            }))}
           onSelectHit={async (worldSlug, entryId) => {
             if (worldSlug !== activeWorldSlug) {
               // Opening an entry in another World resets the tabs to that World

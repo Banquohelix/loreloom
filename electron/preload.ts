@@ -63,6 +63,9 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke('board:update', worldSlug, boardId, patch),
   deleteBoard: (worldSlug, boardId) => ipcRenderer.invoke('board:delete', worldSlug, boardId),
 
+  listFavorites: (worldSlug) => ipcRenderer.invoke('favorite:list', worldSlug),
+  setFavorite: (worldSlug, entryId, favorite) => ipcRenderer.invoke('favorite:set', worldSlug, entryId, favorite),
+
   exportWorldBible: (options) => ipcRenderer.invoke('bible:export', options),
   exportWorldZip: (worldSlug) => ipcRenderer.invoke('world:export-zip', worldSlug),
   openLocalFile: (filePath) => ipcRenderer.invoke('shell:open-local-file', filePath),

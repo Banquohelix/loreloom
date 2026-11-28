@@ -641,7 +641,7 @@ async function startWorkspaceWatcher(rootPath: string): Promise<void> {
           await s.migrateWorldRecords(worldSlug);
           kind = 'world';
         } else if (parts[2] === 'records') {
-          // records/types/* changes the World's entity types; art, maps and boards refresh views
+          // records/types/* changes the World's entity types; art, maps, boards and favorites refresh views
           kind = parts[3] === 'types' ? 'world' : 'art';
         } else if (parts[2] === 'entries' && rel.toLowerCase().endsWith('.md')) {
           kind = 'entry';
@@ -1097,6 +1097,14 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('board:delete', async (_e, worldSlug: string, boardId: string) => {
     await requireStore().deleteBoard(worldSlug, boardId);
+  });
+
+  ipcMain.handle('favorite:list', async (_e, worldSlug: string) => {
+    return requireStore().listFavorites(worldSlug);
+  });
+
+  ipcMain.handle('favorite:set', async (_e, worldSlug: string, entryId: string, favorite: boolean) => {
+    return requireStore().setFavorite(worldSlug, entryId, Boolean(favorite));
   });
 
   ipcMain.handle('bible:export', async (_e, options) => {

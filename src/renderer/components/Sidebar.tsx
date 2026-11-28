@@ -18,6 +18,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Star,
   Trash2,
   Bot,
   Sun,
@@ -28,6 +29,8 @@ import { EntityIcon } from './IconBadge';
 
 
 const FOLDER_PAGE = 150;
+/** Recent pages shown in the sidebar (more are kept for Ctrl+K). */
+const SIDEBAR_RECENTS = 5;
 export type { ActiveView };
 
 interface SidebarProps {
@@ -44,6 +47,11 @@ interface SidebarProps {
   onSelectWorld: (slug: string) => void;
   onOpenCreateWorld: () => void;
   onSelectView: (view: ActiveView) => void;
+  /** Favorited pages of the active World, in the order they were added */
+  favoriteEntries: EntrySummary[];
+  /** Recently opened pages of the active World, newest first */
+  recentEntries: EntrySummary[];
+  onToggleFavorite: (entryId: string) => void;
   onCreateEntry: (typeId?: string) => void;
   onOpenEntityTypeModal: () => void;
   onOpenThemeDrawer: () => void;
@@ -73,6 +81,9 @@ export function Sidebar({
   onSelectWorld,
   onOpenCreateWorld,
   onSelectView,
+  favoriteEntries,
+  recentEntries,
+  onToggleFavorite,
   onCreateEntry,
   onOpenEntityTypeModal,
   onOpenThemeDrawer,
@@ -115,6 +126,47 @@ export function Sidebar({
     }
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [entries]);
+
+  const favoriteIds = useMemo(() => new Set(favoriteEntries.map((e) => e.id)), [favoriteEntries]);
+  const typeById = useMemo(() => new Map((activeWorld?.entityTypes ?? []).map((t) => [t.id, t])), [activeWorld]);
+
+  /** One page row in Favorites or Recent: type icon, title, and a star that appears on hover. */
+  const pageRow = (entry: EntrySummary, section: string) => {
+    const isActive = activeView.kind === 'entry' && activeView.entryId === entry.id;
+    const isFavorite = favoriteIds.has(entry.id);
+    const type = typeById.get(entry.type);
+    return (
+      <div
+        key={`${section}-${entry.id}`}
+        className={`group flex items-center rounded-lg transition ${
+          isActive
+            ? 'bg-black/8 dark:bg-white/10 font-medium text-[var(--studio-text)]'
+            : 'text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5'
+        }`}
+      >
+        <button
+          onClick={() => onSelectView({ kind: 'entry', entryId: entry.id })}
+          title={entry.title}
+          className="flex-1 min-w-0 flex items-center gap-2.5 px-2.5 py-1.5 text-sm text-left cursor-pointer"
+        >
+          <span className="shrink-0" style={{ color: type?.color }}>
+            <EntityIcon name={type?.icon ?? 'FileText'} className="w-4 h-4" />
+          </span>
+          <span className="truncate">{entry.title}</span>
+        </button>
+        <button
+          onClick={() => onToggleFavorite(entry.id)}
+          title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+          aria-label={`${isFavorite ? 'Remove' : 'Add'} ${entry.title} ${isFavorite ? 'from' : 'to'} Favorites`}
+          className={`shrink-0 mr-1 p-1 rounded cursor-pointer hover:bg-black/8 dark:hover:bg-white/10 focus:opacity-100 ${
+            isFavorite && section === 'recent' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          } ${isFavorite ? 'text-amber-500' : ''}`}
+        >
+          <Star className="w-3.5 h-3.5" fill={isFavorite ? 'currentColor' : 'none'} />
+        </button>
+      </div>
+    );
+  };
 
   const toggleFolder = (folder: string) => {
     setCollapsedFolders((prev) => ({ ...prev, [folder]: !prev[folder] }));
@@ -274,6 +326,24 @@ export function Sidebar({
               Moodboards
             </button>
           </div>
+
+          {favoriteEntries.length > 0 && (
+            <div>
+              <div className="px-2 mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--studio-muted)]">
+                Favorites
+              </div>
+              <div className="space-y-0.5">{favoriteEntries.map((e) => pageRow(e, 'favorite'))}</div>
+            </div>
+          )}
+
+          {recentEntries.length > 0 && (
+            <div>
+              <div className="px-2 mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--studio-muted)]">
+                Recent
+              </div>
+              <div className="space-y-0.5">{recentEntries.slice(0, SIDEBAR_RECENTS).map((e) => pageRow(e, 'recent'))}</div>
+            </div>
+          )}
 
           {/* Collections */}
           <div>
