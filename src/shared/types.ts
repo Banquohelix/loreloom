@@ -358,6 +358,8 @@ export interface UpdateCheckResult {
   releaseUrl: string;
   installerApiUrl?: string;
   installerFilename?: string;
+  /** GitHub API URL of the release's SHA256SUMS.txt asset, used to verify the installer. */
+  checksumsApiUrl?: string;
   releaseNotes?: string;
   message?: string;
 }

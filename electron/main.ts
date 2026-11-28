@@ -1,19 +1,24 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, net, safeStorage, shell } from 'electron';
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import yazl from 'yazl';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { WorkspaceStore } from '../src/core/workspace-store';
 import { IndexEngine } from '../src/core/index-engine';
 import { ObsidianImporter } from '../src/core/obsidian-importer';
 import { IntakeEngine } from '../src/core/intake-engine';
 import { KeyedMutex } from '../src/core/keyed-mutex';
-import { checkLatestGitHubRelease } from '../src/core/update-checker';
+import {
+  checkLatestGitHubRelease,
+  findSha256ForFile,
+  isTrustedReleaseAssetUrl,
+  LORELOOM_SIGNING_THUMBPRINT,
+} from '../src/core/update-checker';
 import {
   findArtLinkSuggestions,
   findDuplicateGroups,
@@ -58,7 +63,10 @@ const wikilinkRepairDone = new Set<string>();
 interface AppSettings {
   workspacePath?: string;
   worldIntakeFolders?: Record<string, string[]>;
+  /** Legacy plaintext token (migrated to githubUpdateTokenEnc on first read). */
   githubUpdateToken?: string;
+  /** GitHub token encrypted with Electron safeStorage (Windows DPAPI), base64. */
+  githubUpdateTokenEnc?: string;
 }
 
 function getSettingsPath(): string {
@@ -120,6 +128,145 @@ async function encodeImageForExport(absPath: string, maxDimension: number): Prom
   // Already within the size cap and the original is smaller: keep the original bytes
   if (scale === 1 && buf.length <= encoded.length) return original();
   return `data:image/${transparent ? 'png' : 'jpeg'};base64,${encoded.toString('base64')}`;
+}
+
+/**
+ * Zips a folder in-process (streams, no 2 GB limit, includes dot-folders such as `.trash`,
+ * no shell command built from file paths).
+ */
+async function zipFolder(sourceDir: string, destZip: string): Promise<void> {
+  const zip = new yazl.ZipFile();
+  const walk = async (dir: string, rel: string): Promise<void> => {
+    for (const item of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, item.name);
+      const zipPath = rel ? `${rel}/${item.name}` : item.name;
+      if (item.isDirectory()) await walk(full, zipPath);
+      else if (item.isFile() && !item.name.endsWith('.tmp')) zip.addFile(full, zipPath);
+    }
+  };
+  await walk(sourceDir, '');
+  await new Promise<void>((resolve, reject) => {
+    const out = createWriteStream(destZip);
+    out.on('close', () => resolve());
+    out.on('error', reject);
+    zip.outputStream.on('error', reject);
+    zip.outputStream.pipe(out);
+    zip.end();
+  });
+}
+
+async function getUpdateToken(): Promise<string | null> {
+  const settings = await readAppSettings();
+  if (settings.githubUpdateTokenEnc && safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(settings.githubUpdateTokenEnc, 'base64'));
+    } catch {
+      return null;
+    }
+  }
+  const legacy = settings.githubUpdateToken?.trim();
+  if (legacy && safeStorage.isEncryptionAvailable()) {
+    // Migrate the plaintext token written by <= 0.6.6
+    await setUpdateToken(legacy);
+  }
+  return legacy || null;
+}
+
+async function setUpdateToken(token: string | null): Promise<void> {
+  const settings = await readAppSettings();
+  const updated: AppSettings = { ...settings };
+  delete updated.githubUpdateToken;
+  delete updated.githubUpdateTokenEnc;
+  const clean = token?.trim();
+  if (clean) {
+    if (safeStorage.isEncryptionAvailable()) {
+      updated.githubUpdateTokenEnc = safeStorage.encryptString(clean).toString('base64');
+    } else {
+      updated.githubUpdateToken = clean;
+    }
+  }
+  await writeAppSettings(updated);
+}
+
+async function downloadReleaseAsset(apiUrl: string, token: string | null): Promise<Buffer> {
+  if (!isTrustedReleaseAssetUrl(apiUrl)) throw new Error('Refusing to download from an untrusted URL.');
+  const headers: Record<string, string> = {
+    Accept: 'application/octet-stream',
+    'User-Agent': `Loreloom/${app.getVersion()}`,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(apiUrl, { headers, redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not download update (HTTP ${res.status}).`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Reads the installer's Authenticode signature without building a shell command from the path. */
+function readAuthenticode(filePath: string): Promise<{ status: string; thumbprint: string } | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  const script =
+    '$s = Get-AuthenticodeSignature -LiteralPath $env:LORELOOM_VERIFY_PATH; ' +
+    '@{ status = [string]$s.Status; thumbprint = [string]$s.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress';
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { env: { ...process.env, LORELOOM_VERIFY_PATH: filePath }, timeout: 30_000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          const parsed = JSON.parse(stdout.trim()) as { status?: string; thumbprint?: string };
+          resolve({ status: parsed.status ?? '', thumbprint: (parsed.thumbprint ?? '').toUpperCase() });
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+/**
+ * An installer is only run if its SHA-256 matches the release's SHA256SUMS.txt, or if it carries an
+ * intact Authenticode signature from the Loreloom Studio certificate.
+ */
+async function verifyInstaller(
+  installerPath: string,
+  installerBytes: Buffer,
+  filename: string,
+  checksumsApiUrl: string | undefined,
+  token: string | null
+): Promise<{ ok: true; method: string } | { ok: false; reason: string }> {
+  if (checksumsApiUrl) {
+    const sums = (await downloadReleaseAsset(checksumsApiUrl, token)).toString('utf8');
+    const expected = findSha256ForFile(sums, filename);
+    if (expected) {
+      const actual = crypto.createHash('sha256').update(installerBytes).digest('hex');
+      return actual === expected
+        ? { ok: true, method: 'sha256' }
+        : { ok: false, reason: 'The download does not match the release checksum.' };
+    }
+  }
+  const sig = await readAuthenticode(installerPath);
+  if (sig && sig.thumbprint === LORELOOM_SIGNING_THUMBPRINT) {
+    // UnknownError = intact signature whose self-signed root is not trusted on this PC
+    if (sig.status === 'Valid' || sig.status === 'UnknownError') return { ok: true, method: 'authenticode' };
+    return { ok: false, reason: `The installer signature is ${sig.status}.` };
+  }
+  return { ok: false, reason: 'The installer could not be verified (no checksum or Loreloom signature).' };
+}
+
+/** Files the renderer may open with the OS: recent export outputs and non-executable workspace files. */
+const openableExportPaths = new Set<string>();
+const EXECUTABLE_EXTS = new Set([
+  '.exe', '.msi', '.bat', '.cmd', '.com', '.ps1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.scr', '.lnk', '.hta', '.cpl', '.reg',
+]);
+
+function canOpenLocalFile(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+  if (EXECUTABLE_EXTS.has(path.extname(resolved).toLowerCase())) return false;
+  if (openableExportPaths.has(resolved)) return true;
+  if (!store) return false;
+  const root = path.resolve(store.rootPath);
+  return resolved.startsWith(root + path.sep);
 }
 
 function requireStore(): WorkspaceStore {
@@ -496,6 +643,7 @@ function registerIpcHandlers(): void {
       }
     }
 
+    openableExportPaths.add(path.resolve(saveRes.filePath));
     return {
       outputPath: saveRes.filePath,
       entryCount: rendered.entryCount,
@@ -504,6 +652,9 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('shell:open-local-file', async (_e, filePath: string) => {
+    if (typeof filePath !== 'string' || !canOpenLocalFile(filePath)) {
+      throw new Error('Loreloom can only open exported files and non-executable files inside the workspace.');
+    }
     await shell.openPath(filePath);
   });
 
@@ -520,18 +671,9 @@ function registerIpcHandlers(): void {
     });
     if (saveRes.canceled || !saveRes.filePath) return null;
 
-    const worldDir = s.worldDir(world.slug);
     const destZip = saveRes.filePath;
-    if (process.platform === 'win32') {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Compress-Archive -Path "${worldDir}\\*" -DestinationPath "${destZip}" -Force`,
-      ]);
-    } else {
-      await execFileAsync('zip', ['-r', destZip, '.'], { cwd: worldDir });
-    }
+    await zipFolder(s.worldDir(world.slug), destZip);
+    openableExportPaths.add(path.resolve(destZip));
     return { outputPath: destZip };
   });
 
@@ -627,50 +769,41 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('update:has-token', async () => {
-    const settings = await readAppSettings();
-    return Boolean(settings.githubUpdateToken && settings.githubUpdateToken.trim());
+    return Boolean(await getUpdateToken());
   });
 
   ipcMain.handle('update:set-token', async (_e, token: string | null) => {
-    const settings = await readAppSettings();
-    const updated: AppSettings = { ...settings };
-    if (token && token.trim()) {
-      updated.githubUpdateToken = token.trim();
-    } else {
-      delete updated.githubUpdateToken;
-    }
-    await writeAppSettings(updated);
+    await setUpdateToken(typeof token === 'string' ? token : null);
   });
 
   ipcMain.handle('update:check', async () => {
-    const settings = await readAppSettings();
     return checkLatestGitHubRelease({
       currentVersion: app.getVersion(),
-      token: settings.githubUpdateToken ?? null,
+      token: await getUpdateToken(),
     });
   });
 
-  ipcMain.handle('update:download-install', async (_e, installerApiUrl: string, filename: string) => {
-    const settings = await readAppSettings();
-    const headers: Record<string, string> = {
-      Accept: 'application/octet-stream',
-      'User-Agent': `Loreloom/${app.getVersion()}`,
-    };
-    if (settings.githubUpdateToken?.trim()) {
-      headers.Authorization = `Bearer ${settings.githubUpdateToken.trim()}`;
+  // The renderer's URL/filename are ignored: main re-checks the latest release itself, downloads
+  // only this repository's release assets, and verifies the installer before running it.
+  ipcMain.handle('update:download-install', async () => {
+    const token = await getUpdateToken();
+    const check = await checkLatestGitHubRelease({ currentVersion: app.getVersion(), token });
+    if (check.status !== 'update-available' || !check.installerApiUrl || !check.installerFilename) {
+      throw new Error(check.message || 'No installable update was found.');
     }
 
-    const res = await fetch(installerApiUrl, { headers, redirect: 'follow' });
-    if (!res.ok) {
-      throw new Error(`Could not download installer (HTTP ${res.status}).`);
-    }
-
-    const arrayBuf = await res.arrayBuffer();
-    const safeName = path.basename(filename || 'Loreloom-Setup.exe');
+    const bytes = await downloadReleaseAsset(check.installerApiUrl, token);
+    const safeName = path.basename(check.installerFilename);
     const outDir = path.join(os.tmpdir(), 'loreloom-update');
     await fs.mkdir(outDir, { recursive: true });
     const installerPath = path.join(outDir, safeName);
-    await fs.writeFile(installerPath, Buffer.from(arrayBuf));
+    await fs.writeFile(installerPath, bytes);
+
+    const verdict = await verifyInstaller(installerPath, bytes, safeName, check.checksumsApiUrl, token);
+    if (!verdict.ok) {
+      await fs.unlink(installerPath).catch(() => {});
+      throw new Error(`${verdict.reason} The update was not installed. Download it from the Releases page instead.`);
+    }
 
     const openErr = await shell.openPath(installerPath);
     if (openErr) {
@@ -706,6 +839,7 @@ function createWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
@@ -755,7 +889,21 @@ function createWindow(): void {
   }
 }
 
+// One Loreloom per machine: two instances would share index.db and race on manifest writes
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   protocol.handle('loreloom-asset', (request) => {
     try {
       if (!store) return new Response('No workspace open', { status: 404 });

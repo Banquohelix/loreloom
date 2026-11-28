@@ -7,6 +7,7 @@ import { cloneStarterEntityTypes } from '../shared/starter-types';
 import { normalizeBodyForCompare, repairEscapedWikilinks } from '../shared/wikilink-repair';
 import { getDefaultWorldTheme } from './theme-engine';
 import { KeyedMutex } from './keyed-mutex';
+import { assertSafeSegment, resolveInside, withFsRetry } from './fs-safety';
 import type {
   ArtAsset,
   ArtCategory,
@@ -60,7 +61,12 @@ async function atomicWriteFile(filePath: string, content: string | Buffer): Prom
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   await fs.writeFile(tempPath, content);
-  await fs.rename(tempPath, filePath);
+  try {
+    await withFsRetry(() => fs.rename(tempPath, filePath));
+  } catch (err) {
+    await fs.unlink(tempPath).catch(() => {});
+    throw err;
+  }
 }
 
 /** Frontmatter keys Loreloom manages itself; everything else is preserved verbatim. */
@@ -103,11 +109,11 @@ async function moveToTrash(sourcePath: string, trashDir: string, name: string): 
   await fs.mkdir(trashDir, { recursive: true });
   const dest = path.join(trashDir, `${trashStamp()}__${name}`);
   try {
-    await fs.rename(sourcePath, dest);
+    await withFsRetry(() => fs.rename(sourcePath, dest));
   } catch {
     // Fallback for cross-device or locked folders: copy then remove
     await fs.cp(sourcePath, dest, { recursive: true });
-    await fs.rm(sourcePath, { recursive: true, force: true });
+    await withFsRetry(() => fs.rm(sourcePath, { recursive: true, force: true }));
   }
   return dest;
 }
@@ -148,7 +154,7 @@ export class WorkspaceStore {
   }
 
   public worldDir(worldSlug: string): string {
-    return path.join(this.worldsDir(), worldSlug);
+    return path.join(this.worldsDir(), assertSafeSegment(worldSlug, 'world slug'));
   }
 
   private worldConfigPath(worldSlug: string): string {
@@ -489,7 +495,9 @@ export class WorkspaceStore {
   private async createEntryUnlocked(input: CreateEntryInput): Promise<Entry> {
     const now = new Date().toISOString();
     const folder = (input.folder ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-    const targetDir = folder ? path.join(this.entriesDir(input.worldSlug), folder) : this.entriesDir(input.worldSlug);
+    const targetDir = folder
+      ? resolveInside(this.entriesDir(input.worldSlug), folder)
+      : this.entriesDir(input.worldSlug);
     await fs.mkdir(targetDir, { recursive: true });
 
     const baseSlug = slugify(input.title);
@@ -579,7 +587,7 @@ export class WorkspaceStore {
 
     if (nextFolder !== existing.folder) {
       const targetDir = nextFolder
-        ? path.join(this.entriesDir(input.worldSlug), nextFolder)
+        ? resolveInside(this.entriesDir(input.worldSlug), nextFolder)
         : this.entriesDir(input.worldSlug);
       await fs.mkdir(targetDir, { recursive: true });
       let candidate = existing.slug;
@@ -628,7 +636,7 @@ export class WorkspaceStore {
     const newFullPath = path.join(this.entriesDir(input.worldSlug), updated.relativePath);
     await atomicWriteFile(newFullPath, this.serializeEntry(updated));
     if (newFullPath !== oldFullPath && (await exists(oldFullPath))) {
-      await fs.unlink(oldFullPath);
+      await withFsRetry(() => fs.unlink(oldFullPath));
     }
     return updated;
   }
@@ -865,12 +873,7 @@ export class WorkspaceStore {
 
   resolveAssetAbsolutePath(worldSlug: string, relativePath: string): string {
     const clean = relativePath.replace(/^\/+/, '');
-    const worldRoot = path.resolve(this.worldDir(worldSlug));
-    const resolved = path.resolve(worldRoot, clean);
-    if (!resolved.startsWith(worldRoot)) {
-      throw new Error('Invalid asset path');
-    }
-    return resolved;
+    return resolveInside(this.worldDir(worldSlug), clean);
   }
 
   async listMaps(worldSlug: string): Promise<WorldMapDef[]> {
