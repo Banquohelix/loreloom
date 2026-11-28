@@ -4,11 +4,13 @@ import { getBridge } from '../lib/bridge';
 
 interface SetupWorkspaceViewProps {
   onWorkspaceSelected: (rootPath: string) => Promise<void>;
+  /** Why the saved workspace couldn't be opened at startup, if it couldn't. */
+  initialError?: string | null;
 }
 
-export function SetupWorkspaceView({ onWorkspaceSelected }: SetupWorkspaceViewProps) {
+export function SetupWorkspaceView({ onWorkspaceSelected, initialError }: SetupWorkspaceViewProps) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError ?? null);
 
   const handleChooseFolder = async () => {
     setError(null);

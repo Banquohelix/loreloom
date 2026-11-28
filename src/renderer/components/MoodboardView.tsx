@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import type { ArtAsset, BoardItem, MoodboardDef, WorldConfig } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useKeyedDebouncedSaver } from '../lib/debounced-saver';
+import { useNonPassiveWheel } from '../lib/use-non-passive-wheel';
 
 interface MoodboardViewProps {
   world: WorldConfig;
@@ -63,12 +65,19 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
 
   const assetById = useMemo(() => new Map(artAssets.map((a) => [a.id, a])), [artAssets]);
 
+  // Debounced, ordered writes: typing in a sticky note or title saves once you pause
+  const scheduleItemsSave = useKeyedDebouncedSaver<BoardItem[]>((boardId, items) =>
+    bridge.updateBoard(world.slug, boardId, { items })
+  );
+  const boardWheelRef = useNonPassiveWheel<HTMLDivElement>((e) => {
+    setZoom((z) => Math.max(0.4, Math.min(2.5, z * (e.deltaY < 0 ? 1.1 : 0.9))));
+  });
+
   const saveItems = async (nextItems: BoardItem[]) => {
     if (!activeBoard) return;
-    setBoards((prev) =>
-      prev.map((b) => (b.id === activeBoard.id ? { ...b, items: nextItems } : b))
-    );
-    await bridge.updateBoard(world.slug, activeBoard.id, { items: nextItems });
+    const boardId = activeBoard.id;
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? { ...b, items: nextItems } : b)));
+    scheduleItemsSave(boardId, nextItems);
   };
 
   const handleCreateBoard = async (e: React.FormEvent) => {
@@ -153,7 +162,7 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
   const handleCanvasMouseUp = async () => {
     if (draggingItemRef.current && activeBoard) {
       draggingItemRef.current = null;
-      await bridge.updateBoard(world.slug, activeBoard.id, { items: activeBoard.items });
+      scheduleItemsSave(activeBoard.id, activeBoard.items);
     }
     panningRef.current = null;
   };
@@ -318,10 +327,7 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
           onMouseMove={handleCanvasMouseMove}
           onMouseUp={handleCanvasMouseUp}
           onMouseLeave={handleCanvasMouseUp}
-          onWheel={(e) => {
-            e.preventDefault();
-            setZoom((z) => Math.max(0.4, Math.min(2.5, z * (e.deltaY < 0 ? 1.1 : 0.9))));
-          }}
+          ref={boardWheelRef}
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDropImageFiles}
         >

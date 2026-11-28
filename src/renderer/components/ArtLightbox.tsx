@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowUpRight, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { ArtAsset, ArtCategory, EntrySummary, WorldConfig } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { notifyError } from '../lib/notify';
 
 const CATEGORIES: ArtCategory[] = ['character', 'environment', 'prop', 'mood', 'map', 'other'];
 
@@ -33,7 +34,10 @@ export function ArtLightbox({
   const [linkedEntries, setLinkedEntries] = useState<EntrySummary[]>([]);
 
   useEffect(() => {
-    bridge.getArtLinkedEntries(world.slug, asset.id).then(setLinkedEntries).catch(() => {});
+    bridge
+      .getArtLinkedEntries(world.slug, asset.id)
+      .then(setLinkedEntries)
+      .catch((err) => notifyError('Could not load linked entries', err));
   }, [world.slug, asset.id, bridge]);
 
   const handleSaveText = () => {

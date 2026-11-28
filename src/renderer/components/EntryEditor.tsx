@@ -25,6 +25,7 @@ import {
   PanelRight,
   Quote,
   Sparkles,
+  Table as TableIcon,
   X,
 } from 'lucide-react';
 import type { ArtAsset, Entry, EntrySummary, UpdateEntryInput, UpdateEntryResult, WorldConfig } from '@shared/types';
@@ -32,6 +33,11 @@ import { normalizeBodyForCompare } from '@shared/wikilink-repair';
 import { getBridge } from '../lib/bridge';
 import { editorHtmlToMarkdown, markdownToEditorHtml } from '../lib/markdown-codec';
 import { registerPendingSaveFlusher } from '../lib/pending-saves';
+import {
+  createSuggestionMenu,
+  rankByQuery,
+  type SuggestionMenuState,
+} from '../lib/suggestion-menus';
 
 const BODY_SAVE_DEBOUNCE_MS = 450;
 
@@ -45,6 +51,38 @@ function htmlToMarkdown(html: string, worldSlug: string): string {
 }
 
 export type EntrySavePatch = Omit<UpdateEntryInput, 'worldSlug' | 'id'>;
+
+type SlashCommandId =
+  | 'h1' | 'h2' | 'h3' | 'quote' | 'bullet' | 'ordered' | 'task' | 'code' | 'hr' | 'table' | 'art';
+
+interface SlashCommand {
+  id: SlashCommandId;
+  label: string;
+  hint: string;
+  icon: typeof Heading1;
+  keywords: string[];
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { id: 'h1', label: 'Heading 1', hint: 'Big section title', icon: Heading1, keywords: ['title', 'h1'] },
+  { id: 'h2', label: 'Heading 2', hint: 'Medium section title', icon: Heading2, keywords: ['subtitle', 'h2'] },
+  { id: 'h3', label: 'Heading 3', hint: 'Small section title', icon: Heading3, keywords: ['h3'] },
+  { id: 'quote', label: 'Lore Callout / Quote', hint: 'Highlighted passage', icon: Quote, keywords: ['blockquote', 'callout'] },
+  { id: 'bullet', label: 'Bullet List', hint: 'Unordered list', icon: List, keywords: ['ul', 'list'] },
+  { id: 'ordered', label: 'Numbered List', hint: 'Ordered list', icon: ListOrdered, keywords: ['ol', 'number'] },
+  { id: 'task', label: 'Checklist', hint: 'Tasks with checkboxes', icon: ListChecks, keywords: ['todo', 'task', 'checkbox'] },
+  { id: 'table', label: 'Table', hint: '3 × 3 table with header row', icon: TableIcon, keywords: ['grid', 'stats'] },
+  { id: 'code', label: 'Code / Stat Block', hint: 'Monospace block', icon: Code, keywords: ['stat', 'pre'] },
+  { id: 'hr', label: 'Divider', hint: 'Horizontal rule', icon: Minus, keywords: ['separator', 'line', 'hr'] },
+  { id: 'art', label: 'Concept Art Image', hint: 'Insert art from this World', icon: ImageIcon, keywords: ['image', 'picture'] },
+];
+
+interface WikiSuggestion {
+  id: string;
+  title: string;
+  type: string;
+  create?: boolean;
+}
 
 interface EntryEditorProps {
   world: WorldConfig;
@@ -79,9 +117,58 @@ export function EntryEditor({
   const [tagInput, setTagInput] = useState('');
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [pickerMode, setPickerMode] = useState<'cover' | 'portrait' | 'inline' | null>(null);
-  const [slashOpen, setSlashOpen] = useState(false);
-  const [wikiOpen, setWikiOpen] = useState(false);
-  const [wikiFilter, setWikiFilter] = useState('');
+  // Inline suggestion menus (slash commands, [[wikilinks]]) driven by @tiptap/suggestion
+  const [menu, setMenuState] = useState<SuggestionMenuState | null>(null);
+  const menuRef = useRef<SuggestionMenuState | null>(null);
+  const allEntriesRef = useRef(allEntries);
+  allEntriesRef.current = allEntries;
+  const runSlashCommandRef = useRef<(id: SlashCommandId) => void>(() => {});
+  const suggestionExtensions = useMemo(() => {
+    const controller = {
+      get: () => menuRef.current,
+      set: (next: SuggestionMenuState | null) => {
+        menuRef.current = next;
+        setMenuState(next);
+      },
+    };
+    return [
+      createSuggestionMenu<SlashCommand>({
+        name: 'slashMenu',
+        char: '/',
+        // Only after a space or at the start of a line, so "and/or" doesn't open the menu
+        allowedPrefixes: [' '],
+        items: (query) => rankByQuery(SLASH_COMMANDS, query, (c) => c.label, (c) => c.keywords),
+        apply: (ed, range, cmd) => {
+          ed.chain().focus().deleteRange(range).run();
+          runSlashCommandRef.current(cmd.id);
+        },
+        controller,
+      }),
+      createSuggestionMenu<WikiSuggestion>({
+        name: 'wikiMenu',
+        char: '[[',
+        allowSpaces: true,
+        allowedPrefixes: null,
+        items: (query) => {
+          if (query.includes(']')) return [];
+          const candidates = allEntriesRef.current.filter((e) => e.id !== entry.id);
+          const matches = rankByQuery(candidates, query, (e) => e.title).slice(0, 8);
+          const items: WikiSuggestion[] = matches.map((e) => ({ id: e.id, title: e.title, type: e.type }));
+          const q = query.trim();
+          if (q && !candidates.some((e) => e.title.toLowerCase() === q.toLowerCase())) {
+            items.push({ id: `create:${q}`, title: q, type: 'new page', create: true });
+          }
+          return items;
+        },
+        apply: (ed, range, item) => {
+          ed.chain().focus().insertContentAt(range, `[[${item.title}]] `).run();
+        },
+        controller,
+      }),
+    ];
+    // The editor is keyed by entry id, so these are created once per entry
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveTimerRef = useRef<number | null>(null);
   /** Unsaved edits exist in the editor that have not been sent yet. */
@@ -124,6 +211,7 @@ export function EntryEditor({
       TaskList,
       TaskItem.configure({ nested: true }),
       ImageExtension.configure({ inline: false }),
+      ...suggestionExtensions,
     ],
     editorProps: {
       handleClick: (view, pos, event) => {
@@ -160,28 +248,6 @@ export function EntryEditor({
     },
     content: markdownToHtml(entry.body, world.slug),
     onUpdate: ({ editor: ed }) => {
-      const textBefore = ed.state.doc.textBetween(
-        Math.max(0, ed.state.selection.from - 30),
-        ed.state.selection.from,
-        '\n'
-      );
-
-      if (textBefore.endsWith('/')) {
-        setSlashOpen(true);
-        setWikiOpen(false);
-      } else if (slashOpen && !textBefore.includes('/')) {
-        setSlashOpen(false);
-      }
-
-      const wikiMatch = textBefore.match(/\[\[([^\]]*)$/);
-      if (wikiMatch) {
-        setWikiOpen(true);
-        setWikiFilter(wikiMatch[1]);
-        setSlashOpen(false);
-      } else if (wikiOpen) {
-        setWikiOpen(false);
-      }
-
       latestHtmlRef.current = ed.getHTML();
       pendingBodyRef.current = true;
       setSaveState('saving');
@@ -291,13 +357,9 @@ export function EntryEditor({
     await onSaveEntry({ tags: entry.tags.filter((t) => t !== tag) });
   };
 
-  const runSlashCommand = (cmd: string) => {
+  // The "/query" text is already removed by the suggestion plugin before this runs
+  const runSlashCommand = (cmd: SlashCommandId) => {
     if (!editor) return;
-    // Remove the trailing `/` character
-    const pos = editor.state.selection.from;
-    editor.chain().focus().deleteRange({ from: Math.max(0, pos - 1), to: pos }).run();
-    setSlashOpen(false);
-
     switch (cmd) {
       case 'h1':
         editor.chain().focus().toggleHeading({ level: 1 }).run();
@@ -326,25 +388,16 @@ export function EntryEditor({
       case 'hr':
         editor.chain().focus().setHorizontalRule().run();
         break;
+      case 'table':
+        editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+        break;
       case 'art':
         setPickerMode('inline');
         break;
     }
   };
 
-  const insertWikilink = (targetTitle: string) => {
-    if (!editor) return;
-    const pos = editor.state.selection.from;
-    const deleteLen = wikiFilter.length + 2;
-    editor
-      .chain()
-      .focus()
-      .deleteRange({ from: Math.max(0, pos - deleteLen), to: pos })
-      .insertContent(`[[${targetTitle}]] `)
-      .run();
-    setWikiOpen(false);
-    setWikiFilter('');
-  };
+  runSlashCommandRef.current = runSlashCommand;
 
   const handlePickArt = async (asset: ArtAsset) => {
     if (pickerMode === 'cover') {
@@ -363,14 +416,6 @@ export function EntryEditor({
     }
     setPickerMode(null);
   };
-
-  const filteredWikiEntries = useMemo(() => {
-    const q = wikiFilter.trim().toLowerCase();
-    return allEntries
-      .filter((e) => e.id !== entry.id)
-      .filter((e) => (!q ? true : e.title.toLowerCase().includes(q)))
-      .slice(0, 8);
-  }, [allEntries, entry.id, wikiFilter]);
 
   return (
     <div className="flex-1 h-full overflow-y-auto world-canvas relative">
@@ -542,66 +587,72 @@ export function EntryEditor({
         >
           <EditorContent editor={editor} />
 
-          {/* Slash Command Popover */}
-          {slashOpen && (
-            <div className="mt-2 w-64 rounded-xl border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-xl p-1.5 z-30">
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--studio-muted)]">
-                Insert Block
-              </div>
-              {[
-                { id: 'h1', label: 'Heading 1', icon: Heading1 },
-                { id: 'h2', label: 'Heading 2', icon: Heading2 },
-                { id: 'h3', label: 'Heading 3', icon: Heading3 },
-                { id: 'quote', label: 'Lore Callout / Quote', icon: Quote },
-                { id: 'bullet', label: 'Bullet List', icon: List },
-                { id: 'ordered', label: 'Numbered List', icon: ListOrdered },
-                { id: 'task', label: 'Checklist', icon: ListChecks },
-                { id: 'code', label: 'Code / Stat Block', icon: Code },
-                { id: 'hr', label: 'Divider', icon: Minus },
-                { id: 'art', label: 'Concept Art Image', icon: ImageIcon },
-              ].map((item) => (
-                <button
-                  key={item.id}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    runSlashCommand(item.id);
-                  }}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs hover:bg-black/5 dark:hover:bg-white/5 text-left cursor-pointer"
-                >
-                  <item.icon className="w-3.5 h-3.5 text-[var(--studio-muted)]" />
-                  <span>{item.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Wikilink Autocomplete Popover */}
-          {wikiOpen && (
-            <div className="mt-2 w-72 rounded-xl border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-xl p-1.5 z-30">
+          {/* Inline suggestion menu (slash commands / [[wikilinks]]), positioned at the cursor */}
+          {menu && menu.items.length > 0 && menu.rect && (
+            <div
+              role="listbox"
+              aria-label={menu.kind === 'slashMenu' ? 'Insert block' : 'Link to entry'}
+              className="fixed z-50 w-72 max-h-80 overflow-y-auto rounded-xl border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-xl p-1.5"
+              style={{
+                left: Math.min(menu.rect.left, window.innerWidth - 300),
+                top: menu.rect.bottom + 320 > window.innerHeight ? Math.max(8, menu.rect.top - 326) : menu.rect.bottom + 6,
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
               <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--studio-muted)] flex items-center gap-1">
-                <Link2 className="w-3 h-3" /> Link to World Entry
+                {menu.kind === 'slashMenu' ? (
+                  'Insert Block'
+                ) : (
+                  <>
+                    <Link2 className="w-3 h-3" /> Link to World Entry
+                  </>
+                )}
               </div>
-              {filteredWikiEntries.length === 0 ? (
-                <div className="px-2.5 py-2 text-xs text-[var(--studio-muted)]">
-                  No matching entries
-                </div>
-              ) : (
-                filteredWikiEntries.map((item) => (
-                  <button
-                    key={item.id}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      insertWikilink(item.title);
-                    }}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs hover:bg-black/5 dark:hover:bg-white/5 text-left cursor-pointer"
-                  >
-                    <span className="truncate font-medium">{item.title}</span>
-                    <span className="text-[10px] text-[var(--studio-muted)] uppercase">
-                      {item.type}
-                    </span>
-                  </button>
-                ))
-              )}
+              {menu.kind === 'slashMenu'
+                ? (menu.items as SlashCommand[]).map((item, i) => (
+                    <button
+                      key={item.id}
+                      role="option"
+                      aria-selected={i === menu.selected}
+                      onClick={() => menu.select(item)}
+                      onMouseEnter={() => {
+                        const next = { ...menu, selected: i };
+                        menuRef.current = next;
+                        setMenuState(next);
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs text-left cursor-pointer ${
+                        i === menu.selected ? 'bg-black/8 dark:bg-white/10' : ''
+                      }`}
+                    >
+                      <item.icon className="w-3.5 h-3.5 text-[var(--studio-muted)] shrink-0" />
+                      <span className="font-medium">{item.label}</span>
+                      <span className="ml-auto text-[10px] text-[var(--studio-muted)] truncate">{item.hint}</span>
+                    </button>
+                  ))
+                : (menu.items as WikiSuggestion[]).map((item, i) => (
+                    <button
+                      key={item.id}
+                      role="option"
+                      aria-selected={i === menu.selected}
+                      onClick={() => menu.select(item)}
+                      onMouseEnter={() => {
+                        const next = { ...menu, selected: i };
+                        menuRef.current = next;
+                        setMenuState(next);
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left cursor-pointer ${
+                        i === menu.selected ? 'bg-black/8 dark:bg-white/10' : ''
+                      }`}
+                    >
+                      <span className="truncate font-medium">
+                        {item.create ? `Link “${item.title}” (new page)` : item.title}
+                      </span>
+                      <span className="text-[10px] text-[var(--studio-muted)] uppercase shrink-0">
+                        {item.create ? '+' : item.type}
+                      </span>
+                    </button>
+                  ))}
+              <div className="px-2 pt-1 text-[10px] text-[var(--studio-muted)]">↑↓ to choose · Enter to insert · Esc to close</div>
             </div>
           )}
         </div>

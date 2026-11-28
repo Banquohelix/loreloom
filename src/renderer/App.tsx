@@ -23,6 +23,8 @@ import {
 import { resolveWorldTokens } from '@core/theme-engine';
 import { getBridge } from './lib/bridge';
 import { flushAllPendingSaves } from './lib/pending-saves';
+import { friendlyErrorMessage, onNotice } from './lib/notify';
+import { useKeyedDebouncedSaver } from './lib/debounced-saver';
 import { SetupWorkspaceView } from './components/SetupWorkspaceView';
 import { Sidebar, type ActiveView } from './components/Sidebar';
 import { WorkspaceTabBar } from './components/WorkspaceTabBar';
@@ -44,6 +46,18 @@ import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
 
+/** "Open Questions" → "open-questions" (used as the default folder for a type's new entries). */
+function folderNameForType(pluralName: string): string {
+  return (
+    pluralName
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'lore'
+  );
+}
+
 export default function App() {
   const bridge = getBridge();
   const [booting, setBooting] = useState(true);
@@ -61,25 +75,50 @@ export default function App() {
     [tabs, activeTabId]
   );
 
+  // Refs hold the latest tab state so setActiveView has a stable identity: callbacks created in
+  // earlier renders (palette commands, loadWorkspace) can never act on an outdated tab list.
+  const tabsRef = useRef(tabs);
+  const activeTabIdRef = useRef(activeTabId);
+  const applyTabs = useCallback((nextTabs: WorkspaceTab[], nextActiveId: string) => {
+    tabsRef.current = nextTabs;
+    activeTabIdRef.current = nextActiveId;
+    setTabs(nextTabs);
+    setActiveTabId(nextActiveId);
+  }, []);
   const setActiveView = useCallback(
     (view: ActiveView, openInNewTab = false) => {
-      setTabs((prevTabs) => {
-        const res = openViewInTabs(prevTabs, activeTabId, view, openInNewTab);
-        setActiveTabId(res.activeTabId);
-        return res.tabs;
-      });
+      const res = openViewInTabs(tabsRef.current, activeTabIdRef.current, view, openInNewTab);
+      applyTabs(res.tabs, res.activeTabId);
     },
-    [activeTabId]
+    [applyTabs]
+  );
+  /** Closes every tab (and the split pane) showing this entry, e.g. after it was deleted. */
+  const closeTabsForEntry = useCallback(
+    (entryId: string) => {
+      const keep = tabsRef.current.filter((t) => !(t.view.kind === 'entry' && t.view.entryId === entryId));
+      if (keep.length === 0) {
+        const fresh: WorkspaceTab = { id: `tab-${Date.now()}`, view: { kind: 'overview' } };
+        applyTabs([fresh], fresh.id);
+      } else {
+        const activeStillOpen = keep.some((t) => t.id === activeTabIdRef.current);
+        applyTabs(keep, activeStillOpen ? activeTabIdRef.current : keep[keep.length - 1].id);
+      }
+      setSplitView((sv) => (sv && sv.kind === 'entry' && sv.entryId === entryId ? null : sv));
+    },
+    [applyTabs]
   );
 
   const [entries, setEntries] = useState<EntrySummary[]>([]);
+  /** Set when the active tab's entry no longer exists (deleted here, on another PC, or in a sync). */
+  const [missingEntryId, setMissingEntryId] = useState<string | null>(null);
   const [artAssets, setArtAssets] = useState<ArtAsset[]>([]);
   const [currentEntry, setCurrentEntry] = useState<Entry | null>(null);
   const [backlinks, setBacklinks] = useState<BacklinkRef[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
 
   const [themeDrawerOpen, setThemeDrawerOpen] = useState(false);
-  const [entityTypeModalOpen, setEntityTypeModalOpen] = useState(false);
+  /** null = closed; 'new' = create; otherwise the id of the EntityType being edited */
+  const [entityTypeModal, setEntityTypeModal] = useState<'new' | string | null>(null);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
@@ -88,12 +127,28 @@ export default function App() {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [createWorldModalOpen, setCreateWorldModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastIsError, setToastIsError] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const showToast = useCallback((message: string, ms = 5000) => {
+  const showToast = useCallback((message: string, ms = 5000, isError = /^could not|failed|error/i.test(message)) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToastMessage(message);
+    setToastIsError(isError);
     toastTimerRef.current = window.setTimeout(() => setToastMessage(null), ms);
   }, []);
+
+  // Surface failures instead of swallowing them: component notices, plus any unhandled rejection
+  useEffect(() => {
+    const offNotice = onNotice((n) => showToast(n.message, n.durationMs ?? (n.kind === 'error' ? 9000 : 5000), n.kind === 'error'));
+    const onUnhandled = (e: PromiseRejectionEvent) => {
+      showToast(`Something went wrong: ${friendlyErrorMessage(e.reason)}`, 9000, true);
+    };
+    window.addEventListener('unhandledrejection', onUnhandled);
+    return () => {
+      offNotice();
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    };
+  }, [showToast]);
   const saveQueueRef = useRef(new Map<string, Promise<UpdateEntryResult | null>>());
   const currentEntryRef = useRef<Entry | null>(null);
   const entriesRef = useRef<EntrySummary[]>([]);
@@ -172,7 +227,15 @@ export default function App() {
         ]);
         setAppVersion(ver);
         if (saved) {
-          await loadWorkspace(saved);
+          try {
+            await loadWorkspace(saved);
+          } catch (err) {
+            // e.g. OneDrive not signed in yet, folder moved, or drive disconnected
+            setBootError(
+              `Loreloom couldn't open your saved workspace at "${saved}": ${friendlyErrorMessage(err)}. ` +
+                'Check that the folder exists and OneDrive / Google Drive is running, or choose the folder again.'
+            );
+          }
         }
         bridge
           .checkForUpdates()
@@ -216,13 +279,15 @@ export default function App() {
     }
     let cancelled = false;
     (async () => {
+      const entryId = activeView.entryId;
       const [entry, bl] = await Promise.all([
-        bridge.readEntry(activeWorldSlug, activeView.entryId),
-        bridge.getBacklinks(activeWorldSlug, activeView.entryId),
+        bridge.readEntry(activeWorldSlug, entryId).catch(() => null),
+        bridge.getBacklinks(activeWorldSlug, entryId).catch(() => []),
       ]);
       if (!cancelled) {
         setCurrentEntry(entry);
         setBacklinks(bl);
+        setMissingEntryId(entry ? null : entryId);
       }
     })();
     return () => {
@@ -240,7 +305,12 @@ export default function App() {
     bridge
       .readEntry(activeWorldSlug, splitView.entryId)
       .then((e) => {
-        if (!cancelled) setSplitEntry(e);
+        if (cancelled) return;
+        setSplitEntry(e);
+        if (!e) {
+          setSplitView(null);
+          showToast('That entry no longer exists, so the split pane was closed.');
+        }
       })
       .catch(() => {});
     return () => {
@@ -252,19 +322,33 @@ export default function App() {
   // The editor only applies them when it has no unsaved local edits.
   const reloadOpenEntries = useCallback(
     async (worldSlug: string) => {
-      const reload = async (prev: Entry | null, set: (e: Entry) => void) => {
+      const reload = async (prev: Entry | null, set: (e: Entry) => void, onMissing: (id: string) => void) => {
         if (!prev || prev.worldSlug !== worldSlug) return;
-        const fresh = await bridge.readEntry(worldSlug, prev.id).catch(() => null);
+        const fresh = await bridge.readEntry(worldSlug, prev.id).catch(() => undefined);
+        if (fresh === null) {
+          onMissing(prev.id);
+          return;
+        }
         if (fresh && (fresh.body !== prev.body || fresh.title !== prev.title || fresh.updatedAt !== prev.updatedAt)) {
           set(fresh);
         }
       };
       await Promise.all([
-        reload(currentEntryRef.current, (fresh) =>
-          setCurrentEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+        reload(
+          currentEntryRef.current,
+          (fresh) => setCurrentEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur)),
+          (id) => {
+            setCurrentEntry((cur) => (cur && cur.id === id ? null : cur));
+            setMissingEntryId(id);
+          }
         ),
-        reload(splitEntryRef.current, (fresh) =>
-          setSplitEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+        reload(
+          splitEntryRef.current,
+          (fresh) => setSplitEntry((cur) => (cur && cur.id === fresh.id ? fresh : cur)),
+          (id) => {
+            setSplitEntry((cur) => (cur && cur.id === id ? null : cur));
+            setSplitView((sv) => (sv && sv.kind === 'entry' && sv.entryId === id ? null : sv));
+          }
         ),
       ]);
     },
@@ -300,20 +384,24 @@ export default function App() {
       if (report.updatedEntries > 0) parts.push(`${report.updatedEntries} updated`);
       if (report.importedArt > 0) parts.push(`${report.importedArt} art`);
       if (parts.length > 0) {
-        setToastMessage(`Intake Sync: imported ${parts.join(', ')}`);
-        window.setTimeout(() => setToastMessage(null), 5000);
+        showToast(`Intake Sync: imported ${parts.join(', ')}`);
       }
     });
   }, [bridge, activeWorldSlug, refreshWorldData, reloadOpenEntries]);
 
-  const handleSelectWorld = async (slug: string) => {
-    setActiveWorldSlug(slug);
-    const resetTab: WorkspaceTab = { id: `tab-${Date.now()}`, view: { kind: 'overview' } };
-    setTabs([resetTab]);
-    setActiveTabId(resetTab.id);
-    setSplitView(null);
-    await bridge.updateWorkspaceConfig({ activeWorldSlug: slug });
-  };
+  /** Switches World: tabs and the split pane belong to a World, so they reset; the choice is remembered. */
+  const switchWorld = useCallback(
+    async (slug: string, initialView: ActiveView = { kind: 'overview' }) => {
+      setActiveWorldSlug(slug);
+      const resetTab: WorkspaceTab = { id: `tab-${Date.now()}`, view: initialView };
+      applyTabs([resetTab], resetTab.id);
+      setSplitView(null);
+      setMissingEntryId(null);
+      await bridge.updateWorkspaceConfig({ activeWorldSlug: slug }).catch(() => {});
+    },
+    [applyTabs, bridge]
+  );
+  const handleSelectWorld = (slug: string) => switchWorld(slug);
 
   const handleCreateWorld = async (input: CreateWorldInput) => {
     const created = await bridge.createWorld(input);
@@ -333,7 +421,7 @@ export default function App() {
       worldSlug: activeWorld.slug,
       title: `Untitled ${et?.name ?? 'Entry'}`,
       type: typeId,
-      folder: typeId === 'page' ? 'lore' : `${typeId}s`,
+      folder: typeId === 'page' ? 'lore' : folderNameForType(et?.pluralName ?? `${typeId}s`),
       properties: initialProperties,
     });
     await refreshWorldData(activeWorld.slug);
@@ -445,15 +533,13 @@ export default function App() {
   };
 
   const handleCloseTab = (tabId: string) => {
-    const res = closeTabById(tabs, activeTabId, tabId);
-    setTabs(res.tabs);
-    setActiveTabId(res.activeTabId);
+    const res = closeTabById(tabsRef.current, activeTabIdRef.current, tabId);
+    applyTabs(res.tabs, res.activeTabId);
   };
 
   const handleNewTab = () => {
     const next: WorkspaceTab = { id: `tab-${Date.now()}`, view: { kind: 'overview' } };
-    setTabs((prev) => [...prev, next]);
-    setActiveTabId(next.id);
+    applyTabs([...tabsRef.current, next], next.id);
   };
 
   const handleToggleSplit = () => {
@@ -478,38 +564,52 @@ export default function App() {
       `Delete "${currentEntry.title}"?\n\nThe file is moved to this World's .trash/entries folder, so it can be restored from there.`
     );
     if (!ok) return;
-    await bridge.deleteEntry(activeWorld.slug, currentEntry.id);
+    const deletedId = currentEntry.id;
+    await bridge.deleteEntry(activeWorld.slug, deletedId);
     await refreshWorldData(activeWorld.slug);
-    setActiveView({ kind: 'overview' });
+    closeTabsForEntry(deletedId);
+    showToast(`Moved "${currentEntry.title}" to the World's .trash/entries folder.`);
   };
 
+  // Theme changes apply instantly; dragging the colour picker writes world.yaml once you pause
+  const scheduleThemeSave = useKeyedDebouncedSaver<WorldTheme>(
+    (worldSlug, theme) => bridge.updateWorld(worldSlug, { theme }),
+    350,
+    (err) => showToast(`Could not save the World theme: ${(err as Error).message}`, 8000)
+  );
   const handleChangeWorldTheme = async (theme: WorldTheme) => {
     if (!activeWorld) return;
-    const updated = await bridge.updateWorld(activeWorld.slug, { theme });
+    const slug = activeWorld.slug;
     setWorkspace((prev) =>
-      prev
-        ? {
-            ...prev,
-            worlds: prev.worlds.map((w) => (w.slug === updated.slug ? updated : w)),
-          }
-        : prev
+      prev ? { ...prev, worlds: prev.worlds.map((w) => (w.slug === slug ? { ...w, theme } : w)) } : prev
+    );
+    scheduleThemeSave(slug, theme);
+  };
+
+  const saveEntityTypes = async (nextTypes: EntityTypeDef[]) => {
+    if (!activeWorld) return;
+    const updated = await bridge.updateWorld(activeWorld.slug, { entityTypes: nextTypes });
+    setWorkspace((prev) =>
+      prev ? { ...prev, worlds: prev.worlds.map((w) => (w.slug === updated.slug ? updated : w)) } : prev
     );
   };
 
-  const handleAddEntityType = async (entityType: EntityTypeDef) => {
+  const handleSaveEntityType = async (entityType: EntityTypeDef) => {
     if (!activeWorld) return;
-    const updated = await bridge.updateWorld(activeWorld.slug, {
-      entityTypes: [...activeWorld.entityTypes, entityType],
-    });
-    setWorkspace((prev) =>
-      prev
-        ? {
-            ...prev,
-            worlds: prev.worlds.map((w) => (w.slug === updated.slug ? updated : w)),
-          }
-        : prev
+    const exists = activeWorld.entityTypes.some((t) => t.id === entityType.id);
+    await saveEntityTypes(
+      exists
+        ? activeWorld.entityTypes.map((t) => (t.id === entityType.id ? entityType : t))
+        : [...activeWorld.entityTypes, entityType]
     );
-    setActiveView({ kind: 'collection', typeId: entityType.id });
+    if (!exists) setActiveView({ kind: 'collection', typeId: entityType.id });
+  };
+
+  const handleDeleteEntityType = async (typeId: string) => {
+    if (!activeWorld) return;
+    await saveEntityTypes(activeWorld.entityTypes.filter((t) => t.id !== typeId));
+    if (activeView.kind === 'collection' && activeView.typeId === typeId) setActiveView({ kind: 'overview' });
+    showToast('Type deleted. Entries that used it keep their files and text.');
   };
 
   const handleToggleAppearance = async () => {
@@ -528,12 +628,12 @@ export default function App() {
     if (!activeWorld) return;
     const res = await bridge.exportWorldZip(activeWorld.slug);
     if (res) {
-      setToastMessage(`Backed up ${activeWorld.name} to ${res.outputPath.split(/[\\/]/).pop()}`);
-      window.setTimeout(() => setToastMessage(null), 5000);
+      showToast(`Backed up ${activeWorld.name} to ${res.outputPath.split(/[\\/]/).pop()}`);
     }
   };
 
-  const paletteCommands: PaletteCommand[] = useMemo(() => {
+  // Built fresh on each render while the palette is open, so commands never use stale handlers
+  const buildPaletteCommands = (): PaletteCommand[] => {
     const list: PaletteCommand[] = [];
     if (activeWorld) {
       list.push(
@@ -558,7 +658,7 @@ export default function App() {
       { id: 'check-updates', label: 'Check for Loreloom Updates', category: 'App', run: () => setUpdateModalOpen(true) }
     );
     return list;
-  }, [activeWorld, splitView, appearance]);
+  };
 
   if (booting) {
     return (
@@ -569,7 +669,7 @@ export default function App() {
   }
 
   if (!workspace) {
-    return <SetupWorkspaceView onWorkspaceSelected={loadWorkspace} />;
+    return <SetupWorkspaceView onWorkspaceSelected={loadWorkspace} initialError={bootError} />;
   }
 
   const activeCollectionType =
@@ -596,7 +696,7 @@ export default function App() {
         onOpenCreateWorld={() => setCreateWorldModalOpen(true)}
         onSelectView={setActiveView}
         onCreateEntry={handleCreateEntry}
-        onOpenEntityTypeModal={() => setEntityTypeModalOpen(true)}
+        onOpenEntityTypeModal={() => setEntityTypeModal('new')}
         onOpenThemeDrawer={() => setThemeDrawerOpen(true)}
         onOpenImportModal={() => setImportModalOpen(true)}
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
@@ -617,7 +717,7 @@ export default function App() {
             tabs={tabs}
             activeTabId={activeTabId}
             splitOpen={Boolean(splitView)}
-            onSelectTab={setActiveTabId}
+            onSelectTab={(tabId) => applyTabs(tabsRef.current, tabId)}
             onCloseTab={handleCloseTab}
             onNewTab={handleNewTab}
             onToggleSplit={handleToggleSplit}
@@ -698,7 +798,22 @@ export default function App() {
                   onCreateEntry={handleCreateEntry}
                   onSelectEntry={(entryId) => setActiveView({ kind: 'entry', entryId }, true)}
                   onMoveEntryProperty={handleMoveEntryProperty}
+                  onEditType={(typeId) => setEntityTypeModal(typeId)}
                 />
+              ) : activeView.kind === 'entry' && !currentEntry && missingEntryId === activeView.entryId ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+                  <p className="text-sm font-medium">This entry no longer exists.</p>
+                  <p className="text-xs text-[var(--studio-muted)] max-w-sm">
+                    It was deleted or moved, here or on another device. Deleted entries are kept in the
+                    World's <code>.trash/entries</code> folder.
+                  </p>
+                  <button
+                    onClick={() => closeTabsForEntry(activeView.entryId)}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-medium cursor-pointer"
+                  >
+                    Close tab
+                  </button>
+                </div>
               ) : activeView.kind === 'entry' && currentEntry ? (
                 <>
                   <EntryEditor
@@ -782,7 +897,7 @@ export default function App() {
                       ))}
                     </optgroup>
                     <optgroup label="Lore Entries">
-                      {entries.slice(0, 60).map((e) => (
+                      {[...entries].sort((a, b) => a.title.localeCompare(b.title)).map((e) => (
                         <option key={e.id} value={`entry:${e.id}`}>
                           {e.title}
                         </option>
@@ -859,6 +974,7 @@ export default function App() {
                           onCreateEntry={handleCreateEntry}
                           onSelectEntry={(entryId) => setSplitView({ kind: 'entry', entryId })}
                           onMoveEntryProperty={handleMoveEntryProperty}
+                  onEditType={(typeId) => setEntityTypeModal(typeId)}
                         />
                       ) : null;
                     })()
@@ -895,10 +1011,19 @@ export default function App() {
         />
       )}
 
-      {entityTypeModalOpen && activeWorld && (
+      {entityTypeModal && activeWorld && (
         <EntityTypeModal
-          onSave={handleAddEntityType}
-          onClose={() => setEntityTypeModalOpen(false)}
+          key={entityTypeModal}
+          initial={entityTypeModal === 'new' ? undefined : activeWorld.entityTypes.find((t) => t.id === entityTypeModal)}
+          existingTypes={activeWorld.entityTypes}
+          usageCount={
+            entityTypeModal === 'new'
+              ? 0
+              : entries.filter((e) => e.type === entityTypeModal || (e.secondaryTypes ?? []).includes(entityTypeModal)).length
+          }
+          onSave={handleSaveEntityType}
+          onDelete={handleDeleteEntityType}
+          onClose={() => setEntityTypeModal(null)}
         />
       )}
 
@@ -906,10 +1031,9 @@ export default function App() {
         <ObsidianImportModal
           worlds={workspace.worlds}
           onImported={async (worldSlug) => {
-            const refreshed = await bridge.openWorkspace(workspace.rootPath);
-            setWorkspace(refreshed);
-            setActiveWorldSlug(worldSlug);
-            setActiveView({ kind: 'overview' });
+            const worlds = await bridge.listWorlds();
+            setWorkspace((prev) => (prev ? { ...prev, worlds } : prev));
+            await switchWorld(worldSlug);
           }}
           onClose={() => setImportModalOpen(false)}
         />
@@ -917,12 +1041,14 @@ export default function App() {
 
       {quickSwitcherOpen && (
         <QuickSwitcherModal
-          commands={paletteCommands}
+          commands={buildPaletteCommands()}
           onSelectHit={async (worldSlug, entryId) => {
             if (worldSlug !== activeWorldSlug) {
-              setActiveWorldSlug(worldSlug);
+              // Opening an entry in another World resets the tabs to that World
+              await switchWorld(worldSlug, { kind: 'entry', entryId });
+            } else {
+              setActiveView({ kind: 'entry', entryId }, true);
             }
-            setActiveView({ kind: 'entry', entryId }, true);
           }}
           onClose={() => setQuickSwitcherOpen(false)}
         />
@@ -972,8 +1098,23 @@ export default function App() {
       )}
 
       {toastMessage && (
-        <div className="fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-medium shadow-xl">
-          {toastMessage}
+        <div
+          role={toastIsError ? 'alert' : 'status'}
+          aria-live={toastIsError ? 'assertive' : 'polite'}
+          className={`fixed bottom-5 right-5 z-50 max-w-md flex items-start gap-3 px-4 py-2.5 rounded-xl text-xs font-medium shadow-xl ${
+            toastIsError
+              ? 'bg-red-600 text-white'
+              : 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900'
+          }`}
+        >
+          <span className="flex-1">{toastMessage}</span>
+          <button
+            onClick={() => setToastMessage(null)}
+            aria-label="Dismiss notification"
+            className="opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>

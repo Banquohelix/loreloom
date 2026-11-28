@@ -26,6 +26,7 @@ import {
 } from '@shared/types';
 import { generateWorldPromptFramework } from '@shared/prompt-framework';
 import { getBridge } from '../lib/bridge';
+import { notifyError } from '../lib/notify';
 
 const ART_CATEGORIES: ArtCategory[] = ['character', 'environment', 'prop', 'mood', 'map', 'other'];
 
@@ -71,7 +72,7 @@ export function IntakeSyncModal({
   const totalTriage = triageEntries.length + triageArt.length;
 
   useEffect(() => {
-    bridge.getWorldIntakeFolders(world.slug).then(setFolders).catch(() => {});
+    bridge.getWorldIntakeFolders(world.slug).then(setFolders).catch((err) => notifyError('Could not load intake folders', err));
   }, [bridge, world.slug]);
 
   const handleAddFolder = async () => {
