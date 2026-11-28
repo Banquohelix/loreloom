@@ -46,6 +46,8 @@ import { ExportBibleModal } from './components/ExportBibleModal';
 import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
 import { CreateWorldModal } from './components/CreateWorldModal';
+import { NewEntryModal, type NewEntryChoice } from './components/NewEntryModal';
+import { TEMPLATE_TYPE_DEF, TEMPLATE_TYPE_ID, applyTemplate, templateFromEntry, templatesForType } from '@shared/templates';
 
 /** "Open Questions" → "open-questions" (used as the default folder for a type's new entries). */
 function folderNameForType(pluralName: string): string {
@@ -120,6 +122,10 @@ export default function App() {
   const [themeDrawerOpen, setThemeDrawerOpen] = useState(false);
   /** null = closed; 'new' = create; otherwise the id of the EntityType being edited */
   const [entityTypeModal, setEntityTypeModal] = useState<'new' | string | null>(null);
+  const [newEntryRequest, setNewEntryRequest] = useState<{
+    typeId: string;
+    initialProperties?: Record<string, import('@shared/types').EntryPropertyValue>;
+  } | null>(null);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
@@ -413,21 +419,58 @@ export default function App() {
     await handleSelectWorld(created.slug);
   };
 
+  /** Creates the entry right away, optionally copying a template, and opens it. */
+  const createEntryNow = async (
+    choice: NewEntryChoice,
+    initialProperties?: Record<string, import('@shared/types').EntryPropertyValue>
+  ) => {
+    if (!activeWorld) return;
+    const et = activeWorld.entityTypes.find((t) => t.id === choice.typeId);
+    const template = choice.templateId ? await bridge.readEntry(activeWorld.slug, choice.templateId) : null;
+    const fromTemplate = template
+      ? applyTemplate(template, { title: choice.title, typeId: choice.typeId, typeName: et?.name ?? 'Entry' })
+      : {};
+    const created = await bridge.createEntry({
+      worldSlug: activeWorld.slug,
+      title: choice.title,
+      type: choice.typeId,
+      folder:
+        choice.typeId === 'page'
+          ? 'lore'
+          : choice.typeId === TEMPLATE_TYPE_ID
+            ? 'templates'
+            : folderNameForType(et?.pluralName ?? `${choice.typeId}s`),
+      ...fromTemplate,
+      properties: { ...(fromTemplate.properties ?? {}), ...(initialProperties ?? {}) },
+    });
+    await refreshWorldData(activeWorld.slug);
+    setActiveView({ kind: 'entry', entryId: created.id });
+  };
+
+  /** New entry of a type: opens the template picker when that type has templates, else creates a blank one. */
   const handleCreateEntry = async (
     typeId = 'page',
     initialProperties?: Record<string, import('@shared/types').EntryPropertyValue>
   ) => {
     if (!activeWorld) return;
+    if (typeId !== TEMPLATE_TYPE_ID && templatesForType(entries, typeId).length > 0) {
+      setNewEntryRequest({ typeId, initialProperties });
+      return;
+    }
     const et = activeWorld.entityTypes.find((t) => t.id === typeId);
-    const created = await bridge.createEntry({
-      worldSlug: activeWorld.slug,
-      title: `Untitled ${et?.name ?? 'Entry'}`,
-      type: typeId,
-      folder: typeId === 'page' ? 'lore' : folderNameForType(et?.pluralName ?? `${typeId}s`),
-      properties: initialProperties,
-    });
+    await createEntryNow({ typeId, title: `Untitled ${et?.name ?? 'Entry'}`, templateId: null }, initialProperties);
+  };
+
+  /** Copies the open entry into the Templates collection (created on first use). */
+  const handleSaveAsTemplate = async () => {
+    if (!activeWorld || !currentEntry) return;
+    if (!activeWorld.entityTypes.some((t) => t.id === TEMPLATE_TYPE_ID)) {
+      await saveEntityTypes([...activeWorld.entityTypes, TEMPLATE_TYPE_DEF]);
+    }
+    const typeName = activeWorld.entityTypes.find((t) => t.id === currentEntry.type)?.name ?? 'Entry';
+    const created = await bridge.createEntry({ worldSlug: activeWorld.slug, ...templateFromEntry(currentEntry, typeName) });
     await refreshWorldData(activeWorld.slug);
-    setActiveView({ kind: 'entry', entryId: created.id });
+    showToast(`Saved "${created.title}". New ${typeName} entries can now start from it.`);
   };
 
   const handleMoveEntryProperty = async (entryId: string, key: string, value: string) => {
@@ -640,6 +683,15 @@ export default function App() {
     if (activeWorld) {
       list.push(
         { id: 'new-entry', label: 'Create New Lore Page', category: 'Create', run: () => handleCreateEntry('page') },
+        {
+          id: 'new-from-template',
+          label: 'New Entry from Template…',
+          category: 'Create',
+          run: () =>
+            setNewEntryRequest({
+              typeId: activeView.kind === 'collection' && activeView.typeId !== TEMPLATE_TYPE_ID ? activeView.typeId : 'page',
+            }),
+        },
         { id: 'toggle-split', label: splitView ? 'Close Split-Pane View' : 'Open Side-by-Side Split View', category: 'Layout', run: handleToggleSplit },
         { id: 'go-overview', label: 'Go to World Overview', category: 'Navigate', run: () => setActiveView({ kind: 'overview' }) },
         { id: 'go-art', label: 'Go to Concept Art Gallery', category: 'Navigate', run: () => setActiveView({ kind: 'art' }) },
@@ -856,6 +908,7 @@ export default function App() {
                       }
                       onCreateStubEntry={handleCreateStubEntry}
                       onDeleteEntry={handleDeleteCurrentEntry}
+                      onSaveAsTemplate={handleSaveAsTemplate}
                     />
                   )}
                 </>
@@ -1066,6 +1119,19 @@ export default function App() {
           onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
           onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           onClose={() => setIntakeModalOpen(false)}
+        />
+      )}
+
+      {newEntryRequest && activeWorld && (
+        <NewEntryModal
+          world={activeWorld}
+          entries={entries}
+          initialTypeId={newEntryRequest.typeId}
+          onCreate={async (choice) => {
+            await createEntryNow(choice, newEntryRequest.initialProperties);
+            setNewEntryRequest(null);
+          }}
+          onClose={() => setNewEntryRequest(null)}
         />
       )}
 
