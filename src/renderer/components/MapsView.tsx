@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import type { ArtAsset, EntrySummary, MapPin, WorldConfig, WorldMapDef } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useKeyedDebouncedSaver } from '../lib/debounced-saver';
+import { useNonPassiveWheel } from '../lib/use-non-passive-wheel';
 
 const PIN_COLORS = ['#059669', '#d97706', '#0284c7', '#e11d48', '#7c3aed', '#f97316'];
 
@@ -139,10 +141,20 @@ export function MapsView({
     setSelectedPinId(null);
   };
 
+  // Pin edits update the screen immediately; the file write is debounced and ordered so typing
+  // in a label or note never drops characters or lands out of order.
+  const schedulePinsSave = useKeyedDebouncedSaver<MapPin[]>((mapId, pins) =>
+    bridge.updateMap(world.slug, mapId, { pins })
+  );
+  const mapWheelRef = useNonPassiveWheel<HTMLDivElement>((e) => {
+    setZoom((z) => Math.max(0.5, Math.min(4, z * (e.deltaY < 0 ? 1.12 : 0.89))));
+  });
+
   const savePins = async (nextPins: MapPin[]) => {
     if (!activeMap) return;
-    const updated = await bridge.updateMap(world.slug, activeMap.id, { pins: nextPins });
-    setMaps((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+    const mapId = activeMap.id;
+    setMaps((prev) => prev.map((m) => (m.id === mapId ? { ...m, pins: nextPins } : m)));
+    schedulePinsSave(mapId, nextPins);
   };
 
   const handleMapClick = async (e: React.MouseEvent<HTMLDivElement>) => {
@@ -304,10 +316,7 @@ export function MapsView({
             onMouseMove={handleCanvasMouseMove}
             onMouseUp={handleCanvasMouseUp}
             onMouseLeave={handleCanvasMouseUp}
-            onWheel={(e) => {
-              e.preventDefault();
-              setZoom((z) => Math.max(0.5, Math.min(4, z * (e.deltaY < 0 ? 1.12 : 0.89))));
-            }}
+            ref={mapWheelRef}
           >
             <div
               ref={imgContainerRef}
@@ -338,9 +347,20 @@ export function MapsView({
                       top: `${pin.y}%`,
                       transform: `translate(-50%, -100%) scale(${1 / Math.sqrt(zoom)})`,
                     }}
-                    className="absolute z-10"
+                    className="absolute z-10 outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded-full"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Map pin: ${pin.label}${linked ? `, linked to ${linked.title}` : ''}`}
                     onMouseEnter={() => setHoveredPinId(pin.id)}
                     onMouseLeave={() => setHoveredPinId(null)}
+                    onFocus={() => setHoveredPinId(pin.id)}
+                    onBlur={() => setHoveredPinId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedPinId(pin.id);
+                      }
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedPinId(pin.id);

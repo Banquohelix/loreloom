@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { ArtLinkSuggestion, DuplicateGroup, DuplicateIdConflict, WorldConfig } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 interface WorldToolsModalProps {
   world: WorldConfig;
@@ -18,6 +19,7 @@ interface WorldToolsModalProps {
 }
 
 export function WorldToolsModal({ world, onRefreshWorld, onClose }: WorldToolsModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [tab, setTab] = useState<'duplicates' | 'art'>('duplicates');
   const [loading, setLoading] = useState(true);
@@ -152,6 +154,11 @@ The duplicates are moved to the World's .trash/entries folder.`
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="World cleanup and art auto-linker"
+        tabIndex={-1}
         className="max-w-2xl w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-5 max-h-[86vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >

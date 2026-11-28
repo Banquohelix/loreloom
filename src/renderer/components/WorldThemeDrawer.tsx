@@ -1,6 +1,7 @@
 import { X, Check } from 'lucide-react';
 import type { HeadingFontStyle, WorldConfig, WorldTheme, WorldThemePresetId } from '@shared/types';
 import { listWorldThemePresets } from '@core/theme-engine';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 const ACCENT_SWATCHES = [
   '#b45309',
@@ -19,6 +20,7 @@ interface WorldThemeDrawerProps {
 }
 
 export function WorldThemeDrawer({ world, onChangeTheme, onClose }: WorldThemeDrawerProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const presets = listWorldThemePresets();
 
   const applyPreset = (presetId: WorldThemePresetId) => {
@@ -37,6 +39,11 @@ export function WorldThemeDrawer({ world, onChangeTheme, onClose }: WorldThemeDr
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="World theme and style"
+        tabIndex={-1}
         className="w-96 max-w-full h-full bg-[var(--studio-surface)] border-l border-[var(--studio-border)] p-6 overflow-y-auto shadow-2xl space-y-6"
         onClick={(e) => e.stopPropagation()}
       >

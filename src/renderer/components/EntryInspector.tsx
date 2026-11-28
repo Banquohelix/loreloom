@@ -6,18 +6,24 @@ import type {
   EntryPropertyValue,
   EntryRelationship,
   EntrySummary,
+  PropertyFieldDef,
   WorldConfig,
 } from '@shared/types';
+import { coercePropertyInput, readPropertyValue } from '@shared/entity-type-utils';
 
 /** Text property input that commits on blur, Enter, or unmount, so edits are never dropped. */
 function PropertyTextInput({
   initialValue,
   placeholder,
   onCommit,
+  inputType = 'text',
+  ariaLabel,
 }: {
   initialValue: string;
   placeholder: string;
   onCommit: (value: string) => void;
+  inputType?: 'text' | 'number';
+  ariaLabel?: string;
 }) {
   const [value, setValue] = useState(initialValue);
   const valueRef = useRef(initialValue);
@@ -37,6 +43,8 @@ function PropertyTextInput({
 
   return (
     <input
+      type={inputType}
+      aria-label={ariaLabel}
       value={value}
       onChange={(e) => {
         valueRef.current = e.target.value;
@@ -141,8 +149,12 @@ export function EntryInspector({
     onChangeSecondaryTypes(next);
   };
 
-  const handleFieldChange = (key: string, value: string) => {
-    const next = { ...entry.properties, [key]: value };
+  /** Saves a schema field, typed: numbers as numbers, multi-select as lists; empty removes the key. */
+  const handleFieldChange = (field: PropertyFieldDef, raw: string | string[]) => {
+    const next = { ...entry.properties };
+    const value = coercePropertyInput(field, raw);
+    if (value === undefined) delete next[field.key];
+    else next[field.key] = value;
     onUpdateProperties(next);
   };
 
@@ -219,32 +231,67 @@ export function EntryInspector({
             {activeType.name} Properties
           </div>
           {activeType.fields.map((field) => {
-            const val = entry.properties[field.key];
+            const val = readPropertyValue(field, entry.properties[field.key]);
             const strVal = Array.isArray(val) ? val.join(', ') : val !== undefined ? String(val) : '';
+            const inputId = `prop-${entry.id}-${field.key}`;
             return (
               <div key={field.key}>
-                <label className="block text-xs text-[var(--studio-muted)] mb-1">
+                <label htmlFor={inputId} className="block text-xs text-[var(--studio-muted)] mb-1">
                   {field.label}
                 </label>
-                {field.fieldType === 'select' && field.options ? (
+                {field.fieldType === 'select' && field.options?.length ? (
                   <select
+                    id={inputId}
                     value={strVal}
-                    onChange={(e) => handleFieldChange(field.key, e.target.value)}
+                    onChange={(e) => handleFieldChange(field, e.target.value)}
                     className="w-full rounded-lg border border-[var(--studio-border)] bg-[var(--studio-surface)] px-2.5 py-1.5 text-xs outline-none"
                   >
                     <option value="">—</option>
+                    {strVal && !field.options.includes(strVal) && <option value={strVal}>{strVal}</option>}
                     {field.options.map((opt) => (
                       <option key={opt} value={opt}>
                         {opt}
                       </option>
                     ))}
                   </select>
+                ) : field.fieldType === 'multi-select' && field.options?.length ? (
+                  <div id={inputId} role="group" aria-label={field.label} className="flex flex-wrap gap-1.5">
+                    {Array.from(new Set([...field.options, ...((val as string[] | undefined) ?? [])])).map((opt) => {
+                      const selectedList = (val as string[] | undefined) ?? [];
+                      const on = selectedList.includes(opt);
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            handleFieldChange(field, on ? selectedList.filter((o) => o !== opt) : [...selectedList, opt])
+                          }
+                          className={`px-2 py-0.5 rounded-full text-[11px] border cursor-pointer ${
+                            on
+                              ? 'border-transparent bg-[var(--world-accent-soft)] text-[var(--world-accent)] font-medium'
+                              : 'border-[var(--studio-border)] text-[var(--studio-muted)] hover:text-[var(--studio-text)]'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : (
                   <PropertyTextInput
                     key={`${entry.id}-${field.key}-${strVal}`}
                     initialValue={strVal}
-                    onCommit={(value) => handleFieldChange(field.key, value)}
-                    placeholder={`Enter ${field.label.toLowerCase()}…`}
+                    inputType={field.fieldType === 'number' ? 'number' : 'text'}
+                    ariaLabel={field.label}
+                    onCommit={(value) => handleFieldChange(field, value)}
+                    placeholder={
+                      field.fieldType === 'date'
+                        ? 'e.g. 2026-05-01 or Year 312 of the Ash Era'
+                        : field.fieldType === 'multi-select'
+                          ? 'Values, comma-separated'
+                          : `Enter ${field.label.toLowerCase()}…`
+                    }
                   />
                 )}
               </div>

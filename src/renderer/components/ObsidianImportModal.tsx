@@ -9,6 +9,7 @@ import type {
 } from '@shared/types';
 import { listWorldThemePresets } from '@core/theme-engine';
 import { getBridge } from '../lib/bridge';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 interface ObsidianImportModalProps {
   worlds: WorldConfig[];
@@ -17,6 +18,7 @@ interface ObsidianImportModalProps {
 }
 
 export function ObsidianImportModal({ worlds, onImported, onClose }: ObsidianImportModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const presets = listWorldThemePresets();
 
@@ -73,6 +75,11 @@ export function ObsidianImportModal({ worlds, onImported, onClose }: ObsidianImp
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import Obsidian vault"
+        tabIndex={-1}
         className="max-w-xl w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-5"
         onClick={(e) => e.stopPropagation()}
       >

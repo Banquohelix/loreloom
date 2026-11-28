@@ -1,6 +1,6 @@
 {
   "name": "loreloom",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "Notion-style worldbuilding notes and concept art studio synced via OneDrive/Google Drive",
   "private": true,
   "main": "dist-electron/electron/main.js",
@@ -33,6 +33,7 @@
     "@tiptap/pm": "^2.11.5",
     "@tiptap/react": "^2.11.5",
     "@tiptap/starter-kit": "^2.11.5",
+    "@tiptap/suggestion": "^2.27.3",
     "chokidar": "^4.0.3",
     "gray-matter": "^4.0.3",
     "js-yaml": "^4.1.0",

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { ArrowUpRight, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { ArtAsset, ArtCategory, EntrySummary, WorldConfig } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { notifyError } from '../lib/notify';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 const CATEGORIES: ArtCategory[] = ['character', 'environment', 'prop', 'mood', 'map', 'other'];
 
@@ -25,6 +27,7 @@ export function ArtLightbox({
   onNavigateEntry,
   onClose,
 }: ArtLightboxProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [zoomed, setZoomed] = useState(false);
   const [title, setTitle] = useState(asset.title);
@@ -33,7 +36,10 @@ export function ArtLightbox({
   const [linkedEntries, setLinkedEntries] = useState<EntrySummary[]>([]);
 
   useEffect(() => {
-    bridge.getArtLinkedEntries(world.slug, asset.id).then(setLinkedEntries).catch(() => {});
+    bridge
+      .getArtLinkedEntries(world.slug, asset.id)
+      .then(setLinkedEntries)
+      .catch((err) => notifyError('Could not load linked entries', err));
   }, [world.slug, asset.id, bridge]);
 
   const handleSaveText = () => {
@@ -56,6 +62,11 @@ export function ArtLightbox({
 
   return (
     <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Concept art details"
+        tabIndex={-1}
       className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex flex-col lg:flex-row"
       onClick={onClose}
     >

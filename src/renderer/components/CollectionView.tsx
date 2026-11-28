@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clock, Kanban, LayoutGrid, Plus, Search, Table as TableIcon } from 'lucide-react';
 import type {
   ArtAsset,
@@ -24,6 +24,8 @@ interface CollectionViewProps {
   onCreateEntry: (typeId: string, initialProperties?: Record<string, EntryPropertyValue>) => void;
   onSelectEntry: (entryId: string) => void;
   onMoveEntryProperty?: (entryId: string, key: string, value: string) => Promise<void>;
+  /** Opens the EntityType editor (fields, layout, icon) for this collection. */
+  onEditType?: (typeId: string) => void;
 }
 
 export function CollectionView({
@@ -34,24 +36,52 @@ export function CollectionView({
   onCreateEntry,
   onSelectEntry,
   onMoveEntryProperty,
+  onEditType,
 }: CollectionViewProps) {
   const bridge = getBridge();
-  const [viewMode, setViewMode] = useState<'gallery' | 'table' | 'timeline' | 'board'>(
-    entityType.id === 'event' ? 'timeline' : entityType.defaultView
-  );
+  type ViewMode = 'gallery' | 'table' | 'timeline' | 'board';
+  const prefsKey = `loreloom:collection:${world.slug}:${entityType.id}`;
+  const defaultsFor = (): { viewMode: ViewMode; eraFilter: string; boardFieldKey: string } => {
+    const fallback = {
+      viewMode: (entityType.id === 'event' ? 'timeline' : entityType.defaultView) as ViewMode,
+      eraFilter: 'all',
+      boardFieldKey: pickDefaultBoardField(entityType).key,
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem(prefsKey) || 'null');
+      return saved ? { ...fallback, ...saved } : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const [viewMode, setViewMode] = useState<ViewMode>(() => defaultsFor().viewMode);
   const [search, setSearch] = useState('');
-  const [eraFilter, setEraFilter] = useState<string>('all');
+  const [eraFilter, setEraFilter] = useState<string>(() => defaultsFor().eraFilter);
   const groupableFields = useMemo(() => getBoardGroupableFields(entityType), [entityType]);
-  const [boardFieldKey, setBoardFieldKey] = useState<string>(
-    () => pickDefaultBoardField(entityType).key
-  );
+  const [boardFieldKey, setBoardFieldKey] = useState<string>(() => defaultsFor().boardFieldKey);
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
+  // Reset only when switching to a different collection (not on every workspace/theme reload)
+  const loadedKeyRef = useRef(prefsKey);
   useEffect(() => {
-    setViewMode(entityType.id === 'event' ? 'timeline' : entityType.defaultView);
-    setEraFilter('all');
-    setBoardFieldKey(pickDefaultBoardField(entityType).key);
-  }, [entityType]);
+    if (loadedKeyRef.current === prefsKey) return;
+    loadedKeyRef.current = prefsKey;
+    const d = defaultsFor();
+    setViewMode(d.viewMode);
+    setEraFilter(d.eraFilter);
+    setBoardFieldKey(d.boardFieldKey);
+    setSearch('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefsKey]);
+
+  useEffect(() => {
+    if (loadedKeyRef.current !== prefsKey) return;
+    try {
+      localStorage.setItem(prefsKey, JSON.stringify({ viewMode, eraFilter, boardFieldKey }));
+    } catch {
+      // storage full or unavailable: preferences just won't persist
+    }
+  }, [prefsKey, viewMode, eraFilter, boardFieldKey]);
 
   const activeBoardField = useMemo(
     () => groupableFields.find((f) => f.key === boardFieldKey) ?? groupableFields[0],
@@ -109,6 +139,17 @@ export function CollectionView({
               </h1>
               <p className="text-xs text-[var(--studio-muted)]">
                 {filtered.length} {filtered.length === 1 ? 'entry' : 'entries'} in {world.name}
+                {onEditType && (
+                  <>
+                    {' · '}
+                    <button
+                      onClick={() => onEditType(entityType.id)}
+                      className="underline-offset-2 hover:underline hover:text-[var(--studio-text)] cursor-pointer"
+                    >
+                      Edit type &amp; fields
+                    </button>
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -394,7 +435,7 @@ export function CollectionView({
             )}
 
             <div className="flex gap-4 overflow-x-auto pb-4 items-start">
-              {boardColumns.map((col) => {
+              {boardColumns.map((col, colIndex) => {
                 const isDragOver = dragOverCol === col.value;
                 return (
                   <div
@@ -434,9 +475,22 @@ export function CollectionView({
                           <div
                             key={entry.id}
                             draggable
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`${entry.title}, ${col.label}. Enter to open, Alt+Left or Alt+Right to move.`}
                             onDragStart={(e) => {
                               e.dataTransfer.setData('text/loreloom-entry-id', entry.id);
                               e.dataTransfer.effectAllowed = 'move';
+                            }}
+                            onKeyDown={async (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                onSelectEntry(entry.id);
+                              } else if (e.altKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && onMoveEntryProperty) {
+                                e.preventDefault();
+                                const target = boardColumns[colIndex + (e.key === 'ArrowRight' ? 1 : -1)];
+                                if (target) await onMoveEntryProperty(entry.id, activeBoardField.key, target.value);
+                              }
                             }}
                             onClick={() => onSelectEntry(entry.id)}
                             className="p-3 rounded-xl border border-[var(--world-canvas-border)] bg-[var(--world-canvas-bg)] hover:border-amber-500/60 shadow-xs transition cursor-pointer space-y-1.5"

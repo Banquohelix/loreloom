@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import type { CreateWorldInput, WorldMedium, WorldThemePresetId } from '@shared/types';
 import { listWorldThemePresets } from '@core/theme-engine';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 interface CreateWorldModalProps {
   onCreate: (input: CreateWorldInput) => Promise<void>;
@@ -9,6 +10,7 @@ interface CreateWorldModalProps {
 }
 
 export function CreateWorldModal({ onCreate, onClose }: CreateWorldModalProps) {
+  const dialogRef = useModalA11y<HTMLFormElement>(onClose);
   const presets = listWorldThemePresets();
   const [name, setName] = useState('');
   const [subtitle, setSubtitle] = useState('');
@@ -28,6 +30,11 @@ export function CreateWorldModal({ onCreate, onClose }: CreateWorldModalProps) {
       onClick={onClose}
     >
       <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create a new World"
+        tabIndex={-1}
         onSubmit={handleSubmit}
         onClick={(e) => e.stopPropagation()}
         className="max-w-md w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-4"

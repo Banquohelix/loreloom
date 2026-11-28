@@ -3,6 +3,8 @@ import { Eye, EyeOff, RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
 import type { WorldConfig, WorldGraph } from '@shared/types';
 import { getBridge } from '../lib/bridge';
 import { layoutGraphAsync } from '../lib/graph-layout-client';
+import { notifyError } from '../lib/notify';
+import { useNonPassiveWheel } from '../lib/use-non-passive-wheel';
 
 interface SimNode {
   id: string;
@@ -33,6 +35,9 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
   const draggingNodeRef = useRef<string | null>(null);
+  /** Set once a node drag actually moves, so the click that ends the drag doesn't open the entry. */
+  const dragMovedRef = useRef(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const panningRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
   );
@@ -45,7 +50,7 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
   }, [world.entityTypes]);
 
   useEffect(() => {
-    bridge.getWorldGraph(world.slug).then(setGraph).catch(() => {});
+    bridge.getWorldGraph(world.slug).then(setGraph).catch((err) => notifyError('Could not load the Lore Graph', err));
   }, [bridge, world.slug]);
 
   const visibleGraph = useMemo(() => {
@@ -114,6 +119,11 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
   };
 
   const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (draggingNodeRef.current && dragStartRef.current && !dragMovedRef.current) {
+      if (Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y) > 4) {
+        dragMovedRef.current = true;
+      }
+    }
     if (draggingNodeRef.current && svgRef.current) {
       const rect = svgRef.current.getBoundingClientRect();
       const x = (e.clientX - rect.left - rect.width / 2 - pan.x) / zoom;
@@ -134,11 +144,10 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
     panningRef.current = null;
   };
 
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
+  const wheelRef = useNonPassiveWheel<SVGSVGElement>((e) => {
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
     setZoom((z) => Math.max(0.3, Math.min(3, z * factor)));
-  };
+  });
 
   return (
     <div className="flex-1 h-full flex flex-col world-canvas overflow-hidden">
@@ -249,13 +258,15 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
           </div>
         ) : (
           <svg
-            ref={svgRef}
+            ref={(el) => {
+              svgRef.current = el;
+              wheelRef(el);
+            }}
             className="w-full h-full cursor-grab active:cursor-grabbing select-none"
             onMouseDown={handleSvgMouseDown}
             onMouseMove={handleSvgMouseMove}
             onMouseUp={handleSvgMouseUp}
             onMouseLeave={handleSvgMouseUp}
-            onWheel={handleWheel}
           >
             <g
               transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}
@@ -324,11 +335,28 @@ export function WorldGraphView({ world, onSelectEntry }: WorldGraphViewProps) {
                       onMouseDown={(e) => {
                         e.stopPropagation();
                         draggingNodeRef.current = node.id;
+                        dragMovedRef.current = false;
+                        dragStartRef.current = { x: e.clientX, y: e.clientY };
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (dragMovedRef.current) {
+                          dragMovedRef.current = false;
+                          return;
+                        }
                         onSelectEntry(node.id);
                       }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${node.title}`}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onSelectEntry(node.id);
+                        }
+                      }}
+                      onFocus={() => setHoveredId(node.id)}
+                      onBlur={() => setHoveredId(null)}
                     >
                       {isSearchMatch && (
                         <circle r={r + 6} fill={color} fillOpacity={0.25} />

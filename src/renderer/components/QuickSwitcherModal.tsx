@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Command, FileText, Search, X } from 'lucide-react';
 import type { SearchHit } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 export interface PaletteCommand {
   id: string;
@@ -21,6 +22,7 @@ export function QuickSwitcherModal({
   onSelectHit,
   onClose,
 }: QuickSwitcherModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -82,6 +84,11 @@ export function QuickSwitcherModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette and quick switcher"
+        tabIndex={-1}
         className="max-w-xl w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >

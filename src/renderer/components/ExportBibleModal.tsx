@@ -6,6 +6,7 @@ import type {
   WorldConfig,
 } from '@shared/types';
 import { getBridge } from '../lib/bridge';
+import { useModalA11y } from '../lib/use-modal-a11y';
 
 interface ExportBibleModalProps {
   world: WorldConfig;
@@ -18,6 +19,7 @@ export function ExportBibleModal({
   defaultAppearance,
   onClose,
 }: ExportBibleModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const bridge = getBridge();
   const [format, setFormat] = useState<'html' | 'pdf'>('pdf');
   const [appearance, setAppearance] = useState<StudioAppearance>(defaultAppearance);
@@ -63,6 +65,11 @@ export function ExportBibleModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Export World Bible"
+        tabIndex={-1}
         className="max-w-lg w-full rounded-2xl border border-[var(--studio-border)] bg-[var(--studio-surface)] p-6 shadow-2xl space-y-5"
         onClick={(e) => e.stopPropagation()}
       >

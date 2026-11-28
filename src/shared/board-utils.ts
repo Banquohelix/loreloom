@@ -54,10 +54,9 @@ export function groupEntriesIntoColumns(
   }
 
   const columns: BoardColumn[] = [];
+  // Always present (even empty) so a card can be dragged back to "no value"
   const unassigned = buckets.get('') ?? [];
-  if (unassigned.length > 0) {
-    columns.push({ value: '', label: 'Unassigned', entries: unassigned });
-  }
+  columns.push({ value: '', label: 'Unassigned', entries: unassigned });
   for (const [val, items] of buckets.entries()) {
     if (val === '') continue;
     columns.push({ value: val, label: val, entries: items });
