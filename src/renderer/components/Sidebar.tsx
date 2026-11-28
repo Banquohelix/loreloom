@@ -18,6 +18,7 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Trash2,
   Sun,
 } from 'lucide-react';
 import type { EntrySummary, StudioAppearance, WorldConfig } from '@shared/types';
@@ -48,6 +49,7 @@ interface SidebarProps {
   onOpenImportModal: () => void;
   onOpenIntakeModal: () => void;
   onOpenWorldToolsModal: () => void;
+  onOpenTrash: () => void;
   onOpenExportBibleModal: () => void;
   onOpenUpdateModal: () => void;
   onOpenQuickSwitcher: () => void;
@@ -75,6 +77,7 @@ export function Sidebar({
   onOpenImportModal,
   onOpenIntakeModal,
   onOpenWorldToolsModal,
+  onOpenTrash,
   onOpenExportBibleModal,
   onOpenUpdateModal,
   onOpenQuickSwitcher,
@@ -401,6 +404,13 @@ export function Sidebar({
             >
               <Sparkles className="w-3.5 h-3.5" />
               Cleanup & Auto-Link
+            </button>
+            <button
+              onClick={onOpenTrash}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-[var(--studio-muted)] hover:text-[var(--studio-text)] hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Trash
             </button>
             <button
               onClick={onOpenExportBibleModal}

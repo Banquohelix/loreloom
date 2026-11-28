@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpRight,
   Map as MapIcon,
@@ -51,17 +51,26 @@ export function MapsView({
   );
   const imgContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const loadMaps = async () => {
+  const loadMaps = useCallback(async () => {
     const list = await bridge.listMaps(world.slug);
     setMaps(list);
     setActiveMapId((prev) =>
       prev && list.some((m) => m.id === prev) ? prev : list[0]?.id ?? null
     );
-  };
+  }, [bridge, world.slug]);
 
   useEffect(() => {
-    loadMaps();
-  }, [world.slug]);
+    loadMaps().catch(() => {});
+  }, [loadMaps]);
+
+  // Pick up edits synced from another PC (each record is its own file under records/)
+  useEffect(
+    () =>
+      bridge.onWorkspaceChanged((evt) => {
+        if (evt.worldSlug === world.slug && evt.kind !== 'entry') loadMaps().catch(() => {});
+      }),
+    [bridge, world.slug, loadMaps]
+  );
 
   const activeMap = useMemo(
     () => maps.find((m) => m.id === activeMapId) ?? null,

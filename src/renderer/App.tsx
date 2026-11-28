@@ -41,6 +41,7 @@ import { EntityTypeModal } from './components/EntityTypeModal';
 import { ObsidianImportModal } from './components/ObsidianImportModal';
 import { IntakeSyncModal } from './components/IntakeSyncModal';
 import { WorldToolsModal } from './components/WorldToolsModal';
+import { TrashModal } from './components/TrashModal';
 import { ExportBibleModal } from './components/ExportBibleModal';
 import { UpdateModal } from './components/UpdateModal';
 import { QuickSwitcherModal, type PaletteCommand } from './components/QuickSwitcherModal';
@@ -122,6 +123,7 @@ export default function App() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
   const [worldToolsModalOpen, setWorldToolsModalOpen] = useState(false);
+  const [trashModalOpen, setTrashModalOpen] = useState(false);
   const [exportBibleModalOpen, setExportBibleModalOpen] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
@@ -214,7 +216,7 @@ export default function App() {
       setActiveWorldSlug(preferred);
       setActiveView({ kind: 'overview' });
     },
-    [bridge]
+    [bridge, setActiveView]
   );
 
   // Boot: restore saved workspace path + check version/updates
@@ -316,7 +318,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorldSlug, splitView, bridge]);
+  }, [activeWorldSlug, splitView, bridge, showToast]);
 
   // Re-read open entries so edits synced from another PC (or intake) reach the editor.
   // The editor only applies them when it has no unsaved local edits.
@@ -387,7 +389,7 @@ export default function App() {
         showToast(`Intake Sync: imported ${parts.join(', ')}`);
       }
     });
-  }, [bridge, activeWorldSlug, refreshWorldData, reloadOpenEntries]);
+  }, [bridge, activeWorldSlug, refreshWorldData, reloadOpenEntries, showToast]);
 
   /** Switches World: tabs and the split pane belong to a World, so they reset; the choice is remembered. */
   const switchWorld = useCallback(
@@ -524,7 +526,7 @@ export default function App() {
       });
       return run;
     },
-    [bridge, refreshWorldData]
+    [bridge, refreshWorldData, showToast]
   );
 
   const handleUpdateCurrentEntry = async (patch: EntrySavePatch) => {
@@ -561,14 +563,14 @@ export default function App() {
   const handleDeleteCurrentEntry = async () => {
     if (!activeWorld || !currentEntry) return;
     const ok = window.confirm(
-      `Delete "${currentEntry.title}"?\n\nThe file is moved to this World's .trash/entries folder, so it can be restored from there.`
+      `Delete "${currentEntry.title}"?\n\nIt moves to this World's Trash, where you can restore it.`
     );
     if (!ok) return;
     const deletedId = currentEntry.id;
     await bridge.deleteEntry(activeWorld.slug, deletedId);
     await refreshWorldData(activeWorld.slug);
     closeTabsForEntry(deletedId);
-    showToast(`Moved "${currentEntry.title}" to the World's .trash/entries folder.`);
+    showToast(`Moved "${currentEntry.title}" to the Trash.`);
   };
 
   // Theme changes apply instantly; dragging the colour picker writes world.yaml once you pause
@@ -646,6 +648,7 @@ export default function App() {
         { id: 'go-moodboards', label: 'Go to Visual Moodboards', category: 'Navigate', run: () => setActiveView({ kind: 'moodboards' }) },
         { id: 'intake', label: 'Open Intake Folder Sync & AI Framework', category: 'Tools', run: () => setIntakeModalOpen(true) },
         { id: 'hygiene', label: 'Open World Cleanup & Art Auto-Linker', category: 'Tools', run: () => setWorldToolsModalOpen(true) },
+        { id: 'trash', label: 'Open Trash (restore deleted items)', category: 'Tools', run: () => setTrashModalOpen(true) },
         { id: 'export-bible', label: 'Export Illustrated World Bible (PDF / HTML)', category: 'Export', run: () => setExportBibleModalOpen(true) },
         { id: 'backup-zip', label: `Backup "${activeWorld.name}" as .zip Snapshot`, category: 'Export', run: handleExportWorldZip },
         { id: 'theme', label: 'Customize World Theme & Style', category: 'Appearance', run: () => setThemeDrawerOpen(true) }
@@ -701,6 +704,7 @@ export default function App() {
         onOpenImportModal={() => setImportModalOpen(true)}
         onOpenIntakeModal={() => setIntakeModalOpen(true)}
         onOpenWorldToolsModal={() => setWorldToolsModalOpen(true)}
+        onOpenTrash={() => setTrashModalOpen(true)}
         onOpenExportBibleModal={() => setExportBibleModalOpen(true)}
         onOpenUpdateModal={() => setUpdateModalOpen(true)}
         onOpenQuickSwitcher={() => setQuickSwitcherOpen(true)}
@@ -804,8 +808,8 @@ export default function App() {
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
                   <p className="text-sm font-medium">This entry no longer exists.</p>
                   <p className="text-xs text-[var(--studio-muted)] max-w-sm">
-                    It was deleted or moved, here or on another device. Deleted entries are kept in the
-                    World's <code>.trash/entries</code> folder.
+                    It was deleted or moved, here or on another device. Deleted entries can be restored
+                    from the World's Trash.
                   </p>
                   <button
                     onClick={() => closeTabsForEntry(activeView.entryId)}
@@ -1062,6 +1066,21 @@ export default function App() {
           onRefreshWorld={() => refreshWorldData(activeWorld.slug)}
           onNavigateEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
           onClose={() => setIntakeModalOpen(false)}
+        />
+      )}
+
+      {trashModalOpen && activeWorld && (
+        <TrashModal
+          world={activeWorld}
+          onRestored={async (result) => {
+            if (result.kind === 'type') {
+              const worlds = await bridge.listWorlds().catch(() => null);
+              if (worlds) setWorkspace((prev) => (prev ? { ...prev, worlds } : prev));
+            }
+            await refreshWorldData(activeWorld.slug);
+          }}
+          onOpenEntry={(entryId) => setActiveView({ kind: 'entry', entryId })}
+          onClose={() => setTrashModalOpen(false)}
         />
       )}
 

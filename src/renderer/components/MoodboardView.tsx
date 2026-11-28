@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image as ImageIcon,
   LayoutDashboard,
@@ -46,17 +46,26 @@ export function MoodboardView({ world, artAssets, onRefreshArt }: MoodboardViewP
     origY: number;
   } | null>(null);
 
-  const loadBoards = async () => {
+  const loadBoards = useCallback(async () => {
     const list = await bridge.listBoards(world.slug);
     setBoards(list);
     setActiveBoardId((prev) =>
       prev && list.some((b) => b.id === prev) ? prev : list[0]?.id ?? null
     );
-  };
+  }, [bridge, world.slug]);
 
   useEffect(() => {
-    loadBoards();
-  }, [world.slug]);
+    loadBoards().catch(() => {});
+  }, [loadBoards]);
+
+  // Pick up edits synced from another PC (each record is its own file under records/)
+  useEffect(
+    () =>
+      bridge.onWorkspaceChanged((evt) => {
+        if (evt.worldSlug === world.slug && evt.kind !== 'entry') loadBoards().catch(() => {});
+      }),
+    [bridge, world.slug, loadBoards]
+  );
 
   const activeBoard = useMemo(
     () => boards.find((b) => b.id === activeBoardId) ?? null,

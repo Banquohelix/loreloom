@@ -74,6 +74,9 @@ const bridge: DesktopBridge = {
   reassignEntryId: (worldSlug, relativePath) =>
     ipcRenderer.invoke('hygiene:reassign-id', worldSlug, relativePath),
   findArtLinkSuggestions: (worldSlug) => ipcRenderer.invoke('hygiene:art-suggestions', worldSlug),
+  listTrash: (worldSlug) => ipcRenderer.invoke('trash:list', worldSlug),
+  restoreTrashItem: (worldSlug, itemId) => ipcRenderer.invoke('trash:restore', worldSlug, itemId),
+  deleteTrashItemForever: (worldSlug, itemId) => ipcRenderer.invoke('trash:delete-forever', worldSlug, itemId),
 
   scanObsidianVault: (vaultPath) => ipcRenderer.invoke('obsidian:scan', vaultPath),
   importObsidianVault: (options) => ipcRenderer.invoke('obsidian:import', options),

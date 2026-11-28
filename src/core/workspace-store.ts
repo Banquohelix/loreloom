@@ -8,7 +8,7 @@ import { normalizeBodyForCompare, repairEscapedWikilinks } from '../shared/wikil
 import { getDefaultWorldTheme } from './theme-engine';
 import { KeyedMutex } from './keyed-mutex';
 import { assertSafeSegment, resolveInside, withFsRetry } from './fs-safety';
-import { atomicWriteFile, exists, fileWriteObserver, moveToTrash, trashStamp } from './fs-io';
+import { atomicWriteFile, exists, fileWriteObserver, moveToTrash, notifyWrite, trashStamp } from './fs-io';
 import { RecordFolder } from './record-folder';
 import type {
   ArtAsset,
@@ -20,6 +20,9 @@ import type {
   EntryPropertyValue,
   EntryRelationship,
   MoodboardDef,
+  TrashItem,
+  TrashKind,
+  TrashRestoreResult,
   UpdateEntryInput,
   UpdateEntryResult,
   WorkspaceConfig,
@@ -60,6 +63,35 @@ export interface RecordMigrationReport {
 /** Stable ID for an image found in `assets/` without a record, so two PCs can't mint two IDs. */
 function discoveredAssetId(worldSlug: string, filename: string): string {
   return `img-${crypto.createHash('sha1').update(`${worldSlug}/${filename}`).digest('hex').slice(0, 16)}`;
+}
+
+/** Trash folder per kind of deleted item. */
+const TRASH_FOLDERS: Record<TrashKind, 'entries' | 'assets' | 'maps' | 'boards' | 'types'> = {
+  entry: 'entries',
+  art: 'assets',
+  map: 'maps',
+  board: 'boards',
+  type: 'types',
+};
+
+const TRASH_NAME = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z__(.+)$/;
+
+/** `2026-11-28T09-30-48-455Z__gate.png` → deleted-at ISO time and original name. */
+function parseTrashName(name: string): { deletedAt: string; originalName: string } | null {
+  const m = TRASH_NAME.exec(name);
+  if (!m) return null;
+  return { deletedAt: `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`, originalName: m[6] };
+}
+
+/** `name.ext` → `name-restored.ext`, `name-restored-2.ext`, … until `taken` says it's free. */
+async function freeName(name: string, taken: (candidate: string) => Promise<boolean>): Promise<string> {
+  if (!(await taken(name))) return name;
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  for (let i = 1; ; i++) {
+    const candidate = `${base}-restored${i > 1 ? `-${i}` : ''}${ext}`;
+    if (!(await taken(candidate))) return candidate;
+  }
 }
 
 function newerByUpdatedAt<T extends { updatedAt?: string }>(a: T, b: T): T {
@@ -1155,5 +1187,173 @@ export class WorkspaceStore {
 
   private async deleteBoardUnlocked(worldSlug: string, boardId: string): Promise<void> {
     await this.boardRecords(worldSlug).remove(boardId);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Trash: everything Loreloom deletes is moved to `<world>/.trash/<kind>/<stamp>__<name>`.
+
+  private resolveTrashItem(worldSlug: string, itemId: string): { kind: TrashKind; name: string; file: string } {
+    const slash = itemId.indexOf('/');
+    const kind = itemId.slice(0, slash) as TrashKind;
+    const name = itemId.slice(slash + 1);
+    if (slash <= 0 || !(kind in TRASH_FOLDERS)) throw new Error(`Unknown trash item: ${itemId}`);
+    assertSafeSegment(name, 'trash item');
+    if (!parseTrashName(name)) throw new Error(`Unknown trash item: ${itemId}`);
+    return { kind, name, file: path.join(this.worldTrashDir(worldSlug, TRASH_FOLDERS[kind]), name) };
+  }
+
+  private async readTrashYaml(file: string): Promise<Record<string, unknown> | null> {
+    try {
+      const parsed = yaml.load(await fs.readFile(file, 'utf8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Lists a World's deleted entries, art, maps, moodboards and types, newest first. */
+  async listTrash(worldSlug: string): Promise<TrashItem[]> {
+    const items: TrashItem[] = [];
+    for (const kind of Object.keys(TRASH_FOLDERS) as TrashKind[]) {
+      const dir = this.worldTrashDir(worldSlug, TRASH_FOLDERS[kind]);
+      const names = await fs.readdir(dir).catch(() => [] as string[]);
+      for (const name of names) {
+        if (kind === 'art' && name.endsWith('.meta.yaml')) continue;
+        const parsed = parseTrashName(name);
+        if (!parsed) continue;
+        const file = path.join(dir, name);
+        let title = parsed.originalName;
+        try {
+          if (kind === 'entry') {
+            const fm = matter(await fs.readFile(file, 'utf8')).data as { title?: unknown };
+            if (typeof fm.title === 'string' && fm.title.trim()) title = fm.title;
+          } else {
+            const rec = await this.readTrashYaml(kind === 'art' ? `${file}.meta.yaml` : file);
+            const label = kind === 'type' ? rec?.name : rec?.title;
+            if (typeof label === 'string' && label.trim()) title = label;
+          }
+        } catch {
+          // Unreadable item: still listed by its file name so it can be restored or removed
+        }
+        items.push({
+          id: `${kind}/${name}`,
+          kind,
+          title,
+          deletedAt: parsed.deletedAt,
+          originalName: kind === 'entry' ? parsed.originalName.replace(/__/g, '/') : parsed.originalName.replace(/\.yaml$/, ''),
+        });
+      }
+    }
+    return items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+  }
+
+  /**
+   * Puts a trashed item back where it was. If its old name or ID has been reused since, it comes
+   * back under a new one (`-restored`) rather than overwriting anything.
+   */
+  async restoreTrashItem(worldSlug: string, itemId: string): Promise<TrashRestoreResult> {
+    await this.assertWritable(worldSlug);
+    const { kind, name, file } = this.resolveTrashItem(worldSlug, itemId);
+    if (!(await exists(file))) throw new Error('That item is no longer in the Trash.');
+    const { originalName } = parseTrashName(name)!;
+    const moveOut = async (dest: string) => {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      notifyWrite(dest);
+      await withFsRetry(() => fs.rename(file, dest));
+    };
+
+    if (kind === 'entry') {
+      const raw = await fs.readFile(file, 'utf8');
+      const fm = matter(raw).data as { id?: unknown; title?: unknown };
+      const id = typeof fm.id === 'string' ? fm.id : '';
+      const title = typeof fm.title === 'string' ? fm.title : originalName;
+      if (id) {
+        const clash = await this.readEntryById(worldSlug, id);
+        if (clash) {
+          throw new Error(`"${clash.title}" already uses this entry's ID, so it can't be restored alongside it.`);
+        }
+      }
+      const entriesRoot = this.entriesDir(worldSlug);
+      const wanted = originalName.replace(/__/g, '/');
+      const folder = path.posix.dirname(wanted) === '.' ? '' : path.posix.dirname(wanted);
+      const fileName = await freeName(path.posix.basename(wanted), (c) =>
+        exists(resolveInside(entriesRoot, folder ? `${folder}/${c}` : c))
+      );
+      const relativePath = folder ? `${folder}/${fileName}` : fileName;
+      await this.locks.run(`entry:${worldSlug}:${id || relativePath}`, () => moveOut(resolveInside(entriesRoot, relativePath)));
+      return { kind, title, restoredId: id, relativePath, renamed: relativePath !== wanted };
+    }
+
+    if (kind === 'art') {
+      return this.locks.run(`art:${worldSlug}`, async () => {
+        const assetsFolder = this.assetsDir(worldSlug);
+        const filename = await freeName(assertSafeSegment(originalName, 'file name'), (c) => exists(path.join(assetsFolder, c)));
+        const meta = (await this.readTrashYaml(`${file}.meta.yaml`)) as Partial<ArtAsset> | null;
+        const records = this.artRecords(worldSlug);
+        let id = typeof meta?.id === 'string' ? meta.id : discoveredAssetId(worldSlug, filename);
+        const idTaken = (await records.get(id)) !== null;
+        if (idTaken) id = crypto.randomUUID();
+        const asset: ArtAsset = {
+          category: 'other',
+          tags: [],
+          caption: '',
+          title: path.basename(filename, path.extname(filename)).replace(/[-_]+/g, ' '),
+          createdAt: new Date().toISOString(),
+          ...(meta ?? {}),
+          id,
+          worldSlug,
+          filename,
+          relativePath: `assets/${filename}`,
+        } as ArtAsset;
+        delete (asset as Partial<ArtAsset>).missing;
+        await records.put(asset);
+        await moveOut(path.join(assetsFolder, filename));
+        await fs.rm(`${file}.meta.yaml`, { force: true });
+        return { kind, title: asset.title, restoredId: id, renamed: idTaken || filename !== originalName };
+      });
+    }
+
+    const rec = await this.readTrashYaml(file);
+    if (!rec || typeof rec.id !== 'string') throw new Error('That item could not be read, so it was left in the Trash.');
+
+    if (kind === 'type') {
+      // Read outside the types lock: listWorlds may run the migration, which takes that lock itself
+      const world = (await this.listWorlds()).find((w) => w.slug === worldSlug);
+      if (!world) throw new Error(`World not found: ${worldSlug}`);
+      return this.locks.run(`types:${worldSlug}`, async () => {
+        if (world.entityTypes.some((t) => t.id === rec.id)) {
+          throw new Error(`A type with the ID "${rec.id}" already exists, so this one can't be restored.`);
+        }
+        const { order: _order, ...type } = rec as unknown as TypeRecord;
+        // Write the full list: a World still on the in-memory starter types has no records yet
+        await this.writeEntityTypes(worldSlug, [...world.entityTypes, type]);
+        await fs.rm(file, { force: true });
+        return { kind, title: type.name, restoredId: type.id, renamed: false };
+      });
+    }
+
+    const lockKey = kind === 'map' ? `maps:${worldSlug}` : `boards:${worldSlug}`;
+    return this.locks.run(lockKey, async () => {
+      const folder = (kind === 'map' ? this.mapRecords(worldSlug) : this.boardRecords(worldSlug)) as RecordFolder<
+        WorldMapDef | MoodboardDef
+      >;
+      const record = { ...(rec as unknown as WorldMapDef | MoodboardDef), worldSlug };
+      const idTaken = (await folder.get(record.id)) !== null;
+      if (idTaken) {
+        record.id = crypto.randomUUID();
+        record.title = `${record.title} (restored)`;
+      }
+      record.updatedAt = new Date().toISOString();
+      await folder.put(record);
+      await fs.rm(file, { force: true });
+      return { kind, title: record.title, restoredId: record.id, renamed: idTaken };
+    });
+  }
+
+  /** Permanently deletes one trashed item (and an art item's metadata). Cannot be undone. */
+  async deleteTrashItemForever(worldSlug: string, itemId: string): Promise<void> {
+    const { kind, file } = this.resolveTrashItem(worldSlug, itemId);
+    await withFsRetry(() => fs.rm(file, { recursive: true, force: true }));
+    if (kind === 'art') await fs.rm(`${file}.meta.yaml`, { force: true });
   }
 }

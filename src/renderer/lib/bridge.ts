@@ -11,6 +11,7 @@ import type {
   EntrySummary,
   ImportReport,
   SearchHit,
+  TrashItem,
   UpdateEntryInput,
   VaultScanPreview,
   WorldConfig,
@@ -30,6 +31,12 @@ declare global {
  * outside Electron (for rapid UI preview). In Electron, `window.loreloom` is always provided.
  */
 function createBrowserPreviewBridge(): DesktopBridge {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+  let previewTrash: TrashItem[] = [
+    { id: 'entry/sample-1', kind: 'entry', title: 'Old Kael Draft', deletedAt: hoursAgo(2), originalName: 'characters/kael-draft.md' },
+    { id: 'art/sample-2', kind: 'art', title: 'Rejected Gate Sketch', deletedAt: hoursAgo(30), originalName: 'gate-v1.png' },
+    { id: 'map/sample-3', kind: 'map', title: 'Ash Sea (old)', deletedAt: hoursAgo(24 * 9), originalName: 'map-1' },
+  ];
   let config: WorkspaceConfig = {
     name: 'Loreloom Preview Workspace',
     activeWorldSlug: 'shattered-crown',
@@ -357,6 +364,16 @@ function createBrowserPreviewBridge(): DesktopBridge {
       entries.find((e) => e.id === keepEntryId)!,
     findArtLinkSuggestions: async () => [],
     findDuplicateIds: async () => [],
+    listTrash: async () => previewTrash,
+    restoreTrashItem: async (_worldSlug, itemId) => {
+      const item = previewTrash.find((t) => t.id === itemId);
+      if (!item) throw new Error('That item is no longer in the Trash.');
+      previewTrash = previewTrash.filter((t) => t.id !== itemId);
+      return { kind: item.kind, title: item.title, restoredId: item.id, renamed: false };
+    },
+    deleteTrashItemForever: async (_worldSlug, itemId) => {
+      previewTrash = previewTrash.filter((t) => t.id !== itemId);
+    },
     reassignEntryId: async (_worldSlug, relativePath) => {
       const found = entries.find((e) => e.relativePath === relativePath);
       if (!found) throw new Error('Entry not found');
